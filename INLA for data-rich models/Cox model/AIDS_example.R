@@ -10,9 +10,17 @@ Aids_data$time = Aids_data$time/1000
 Aids_data$AZT = 0
 Aids_data$AZT[Aids_data$diag>10043] = 1
 
-expanded_df = inla.coxph(inla.surv(time = time, event = C) ~ 1 + AZT + f(age, model = "rw1") + T.categ,
+expanded_df = inla.coxph(inla.surv(time = time, event = C) ~ 1 + 
+                            AZT + f(age, model = "rw2", scale.model = TRUE,
+                                 hyper =  list(prec = list(prior = "pc.prec",
+                                 param = c(0.5, 0.01)))) +
+                            T.categ,
                  data = Aids_data, 
-                 control.hazard = list(model="rw1", n.intervals = 50))
+                 control.hazard = list(model="rw2",
+                                       n.intervals = 50,
+                                       scale.model = TRUE, 
+                                       hyper =  list(prec = list(prior = "pc.prec",
+                                                                 param = c(0.5, 0.01)))))
 
 #Old INLA
 res1 = inla(expanded_df$formula,
@@ -64,8 +72,7 @@ lines(res2$summary.random$age$ID,
 lines(res2$summary.random$age$ID,
       exp(res2$summary.random$age$`0.975quant`) ,
       lty = 2, lwd = 2, col = "blue")
-abline(h = 1, lty = 3)
-abline(v = 49, lty = 3)
+
 
 exp(res2$summary.fixed$mean)
 
