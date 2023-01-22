@@ -70,7 +70,7 @@ alpha = alpha1
 rep_1= c(rep(1:n.rep, each = n))
 
 rsm = inla(formula = y1 ~ 1+
-             f(u,model = "besag", scale.model = T,
+             f(u,model = "besagproper", scale.model = T,
                graph = g1, replicate = rep_1)   ,
            family = "poisson",
            data =  data.frame(u , y1),
@@ -86,7 +86,7 @@ u = c(1:67)
 alpha = alpha1
 rep_2= c(rep(1:n.rep, each = n))
 rsm2 = inla(formula = y2 ~ 1+
-              f(u,model = "besag", scale.model = T,
+              f(u,model = "besagproper", scale.model = T,
                 graph = g1, replicate = rep_2)   ,
             family = "poisson",
             data =  data.frame(u , y2),
@@ -110,17 +110,23 @@ Besag.c = c(rep(NA , b), rep(1:n, n.rep) )
 rep_i1 = c(rep(1:n.rep, each = n), rep(NA, b))
 rep_i2 = c(rep(NA, b), rep(1:n.rep, each = n))
 
-d = data.frame(yy,mu , Besag , Besag.c, rep_i1, rep_i2)  
+u = Besag
+v = Besag.c
 
-formula = yy ~ -1 + as.factor(mu) + f(Besag, model = "besagproper",graph=g1, replicate = rep_i1)+
+
+m = as.factor(mu)
+d = data.frame(yy,m , Besag , Besag.c, rep_i1, rep_i2, u, v)  
+
+formula = yy ~ -1 + m + f(u,model = "besagproper",
+                          graph = g1, replicate = rep_i1) + 
+  f(v,model = "besagproper",
+    graph = g1, replicate = rep_i2) +
+  f(Besag, model = "besagproper",graph=g1, replicate = rep_i1)+
   f(Besag.c, copy="Besag",
-    hyper = list(beta = list(fixed = FALSE)), replicate = rep_i2)
-
-alpha = alpha1
+    hyper = list(beta = list(fixed = FALSE, params = c(0,0.001))), replicate = rep_i2)
 
 r1 <- inla(formula,
            family = c("poisson","poisson"),
-           
            control.family = list(list(control.link = list(model = "quantile",quantile = alpha1)),
                                  
                                  list(control.link = list(model = "quantile",
@@ -128,7 +134,8 @@ r1 <- inla(formula,
            data = d,
            verbose = F,
            control.predictor = list(compute = T),
-           control.compute = list(dic = T, waic = T, cpo = T))
+           control.compute = list(dic = T, waic = T, cpo = T),
+           inla.mode = "experimental")
 summary(r1)
 
 

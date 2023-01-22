@@ -16,7 +16,8 @@ res1 = inla(inla.surv(time = IR_diabetes$left, time2 = IR_diabetes$right,
             family = "loglogistic.surv",
             verbose = FALSE,
             control.compute = list(config = TRUE),
-            control.family = list(variant = 1))
+            control.family = list(variant = 1),
+            inla.mode = "experimental")
 
 summary(res1)
 
