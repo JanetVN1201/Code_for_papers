@@ -129,10 +129,11 @@ r1 <- inla(formula,
            inla.mode = "experimental")
 
 
-
 dt = data.frame(
   DIC = c(rsm$dic$dic, rsm2$dic$dic, rsm$dic$dic + rsm2$dic$dic  ,r1$dic$dic),
   WAIC = c(rsm$waic$waic, rsm2$waic$waic, rsm$waic$waic+rsm2$waic$waic  ,r1$waic$waic))
 
 rownames(dt) <- c("Separate 1", "Separate 2", "Sum of Separates "  ,"Joint qunatile")
 pander(dt)
+
+summary(r1)
