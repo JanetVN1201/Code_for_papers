@@ -1,5 +1,7 @@
 library(tictoc)
 
+###Example in section 3.2
+
 x0 <- seq(-10,5,by = 0.001)
 
 f1 <- function(x){
@@ -50,9 +52,9 @@ minf = function(delta) {
   loglik = exp(eta[i] + cov_eta[i,i]/2) - 
     aa[i]*eta[i]
   ll = ll + loglik}
-  #KL
- # xx = rbind(seq(m[1] -10, m[1] + 10, by = 0.01),seq(m[2] - 10, m[2] + 10, by = 0.01))
-xx = rbind(rep(seq(-3,  1, length = 20), each = 20),rep(seq( - 3,  3, length = 20), n = 20))
+  
+  #KLD
+  xx = rbind(rep(seq(-3,  1, length = 20), each = 20),rep(seq( - 3,  3, length = 20), n = 20))
   area = (max(xx[1,]) - min(xx[1,]))*(max(xx[2,]) - min(xx[2,]))
   prior = rep(NA, ncol(xx))
   post = prior
@@ -62,14 +64,11 @@ xx = rbind(rep(seq(-3,  1, length = 20), each = 20),rep(seq( - 3,  3, length = 2
   prior[i] = dt(xx[1,i], df = 5)*dunif(xx[2,i], min = -3, max = 3)#dnorm(xx[1,i], mean = 0, sd = 1, log = FALSE)#dnorm(xx[1,i], mean = 0, sd = 1, log = F)*dnorm(xx[2,i], mean = 0, sd = 1, log = F)
   post[i] = dmvnorm(xx[,i], mean = m + delta, sigma = cov1, log = F)
   f[i] = post[i]*(log(post[i]+0.001) - log(prior[i]+0.001))
-#  f2[i] = (post[i]*(log(post[i]+0.001) - log(prior[i]+0.001)))^2
   }
   kl = area*sum(f)/ncol(xx)
- # err = area*sqrt((sum(f2)/ncol(xx) - (sum(f)/ncol(xx))^2)/ncol(xx))
-  
-  #kl1 = 0.5*(log(det(diag(2))/det(cov1)) - 2 + tr((solve(diag(2)))%*%cov1) + t(m + delta)%*%diag(2)%*%(m + delta))
   return (ll + kl)
 }
+
 
 tic("VBC")
 d_est = optim(c(0,0), minf)
@@ -108,7 +107,7 @@ axis(1, at=1:(N+2), labels=c(expression(paste(beta[0])),
 
 
 
-
+#MCMC
   model = "model {
   for(i in 1:n){
     y[i] ~ dpois(lambda[i])
@@ -152,27 +151,8 @@ colnames(res) = c("beta0", "beta1")
 rownames(res) = c("gaussian", "vb.corrected", "mcmc")
 print(res)
 
-###########random int
+###########Example in Section 4.3
 ##MCMC - define
-cat("model
-    {
-
-    for ( i in 1:N ) {
-    u[i] ~ dnorm(0, u_sd)
-    lambda[i] = exp(beta0 + beta1*x[i] + beta2*x1[i] + beta3*x2[i] + u[i])
-    y[i] ~ dpois( lambda[i])
-
-    }
-
-    ### Define the priors
-    beta0 ~ dnorm( 0, 1 )
-    beta1 ~ dnorm( 0, 1 )
-     beta2 ~ dnorm( 0, 1 )
-      beta3 ~ dnorm( 0, 1 )
-      u_sd ~ dgamma(1,1)
-
-    }", file="sim_jags_VB.txt")
-
 cat("model
     {
 
@@ -193,24 +173,6 @@ cat("model
 inits <- list(beta0 = 0, beta1 = 0, ltau = 0.5)
 params <- c("beta0", "beta1", "tau")
 
-##VB - define
-Model <- function(parm, Data)
-{
-  ### Parameters
-  beta <- parm[Data$pos.beta]
-  ### Log-Prior
-  beta.prior <- sum(dnormv(beta, 0, 1, log=TRUE))
-  ### Log-Likelihood
-  mu <- exp(tcrossprod(Data$X, t(beta)))
-  LL <- sum(dpois(Data$y, mu, log=TRUE))
-  ### Log-Posterior
-  LP <- LL + beta.prior 
-  Modelout <- list(LP=LP, Dev=-2*LL, Monitor=mu[1],
-                   yhat=rnorm(length(mu), mu), parm=parm)
-  return(Modelout)
-}
-
-
 ###Data
 
 if(TRUE){
@@ -228,8 +190,7 @@ if(TRUE){
   par(mar = c(4,2,2,1))
   barplot(table(as.factor(Y)), main = "", ylim = c(0, N))
   
-  #Gaussian
-  
+  #Gaussian strategy
   INLA_result = inla(formula = Y ~ 1 + x + f(ID, model = "iid"), data=data.frame(Y = Y, x = x, ID = 1:N), 
                      family = "poisson", 
                      control.fixed = list(prec = prec,   
@@ -238,16 +199,8 @@ if(TRUE){
                      control.compute=list(config = TRUE),
                      control.inla = list(strategy = "gaussian",
                                          control.vb = list(enable = FALSE)))
-  Gtime = system.time(inla(formula = Y ~ 1 + x + f(ID, model = "iid"), data=data.frame(Y = Y, x = x, ID = 1:N), 
-                           family = "poisson", 
-                           control.fixed = list(prec = prec,   
-                                                prec.intercept = prec,
-                                                correlation.matrix=TRUE),
-                           control.compute=list(config = TRUE),
-                           control.inla = list(strategy = "gaussian",
-                                               control.vb = list(enable = FALSE))))
   
-  #Laplace
+  #Laplace strategy
   INLA_result_L = inla(formula = Y ~ 1 + x + f(ID, model = "iid"), data=data.frame(Y = Y, x = x, ID = 1:N), 
                        family = "poisson", 
                        control.compute=list(config = TRUE),
@@ -256,15 +209,8 @@ if(TRUE){
                                             correlation.matrix=TRUE), 
                        control.inla = list(strategy = "laplace"))
   
-  Ltime = system.time(inla(formula = Y ~ 1 + x + f(ID, model = "iid"), data=data.frame(Y = Y, x = x, ID = 1:N),
-                           family = "poisson", 
-                           control.compute=list(config = TRUE),
-                           control.fixed = list(prec = prec,   
-                                                prec.intercept = prec,
-                                                correlation.matrix=TRUE), 
-                           control.inla = list(strategy = "laplace")))
   
-  #Gaussian with VB
+  #INLA-VBC
   INLA_result_VB = inla(formula = Y ~ 1 + x + f(ID, model = "iid"), data=data.frame(Y = Y, x = x, ID = 1:N), 
                         family = "poisson", 
                         control.compute=list(config = TRUE),
@@ -273,20 +219,6 @@ if(TRUE){
                                              correlation.matrix=TRUE), 
                         control.inla = list(strategy = "gaussian",
                                             control.vb = list(enable = TRUE)))
-  VBCtime = system.time(inla(formula = Y ~ 1 + x + f(ID, model = "iid"), data=data.frame(Y = Y, x = x, ID = 1:N), 
-                             family = "poisson", 
-                             control.compute=list(config = TRUE),
-                             control.fixed = list(prec = prec,   
-                                                  prec.intercept = prec,
-                                                  correlation.matrix=TRUE), 
-                             control.inla = list(strategy = "gaussian",
-                                                 control.vb = list(enable = TRUE))))
-  
-  # summary(INLA_result_VB)
-  # lines(INLA_result_VB$marginals.fixed$`(Intercept)`, type="l", lty = 3, col = "blue")
-  # plot(INLA_result_VB$marginals.fixed$x, type="l")
-  # par(mar = c(2,2,2,2))
-  # barplot(table(Y), col = "lightgrey", ylim = c(0,60), main = "", xlab = "")
   
   #MCMC
   library(rjags)
@@ -295,64 +227,6 @@ if(TRUE){
   samps <- coda.samples( jags.m, params, n.iter=10^5, start = (10^2+1) )
   MCtime = system.time(coda.samples( jags.m, params, n.iter=10^5, start = (10^2+1) ))
   
-  #VB
-  # library(LaplacesDemon)
-  # ##############################  Data from above  ###############################
-  # y <- Y
-  # X <- cbind(1, as.matrix(x), as.matrix(x1), as.matrix(x2))
-  # J <- ncol(X)
-  # 
-  # #########################  Data List Preparation for VB  #########################
-  # mon.names <- "mu[1]"
-  # parm.names <- as.parm.names(list(beta=rep(0,J)))
-  # pos.beta <- grep("beta", parm.names)
-  # PGF <- function(Data) {
-  #   beta <- rnorm(Data$J)
-  #   
-  #   return(c(beta))
-  # }
-  # MyData <- list(J=J, PGF=PGF, X=X, mon.names=mon.names,
-  #                parm.names=parm.names, pos.beta=pos.beta, y=y)
-  # Initial.Values <- rep(0,J)
-  
-  #Fit <- VariationalBayes(Model, Initial.Values, Data=MyData, Covar=NULL,
-  #     Iterations=5000, Method="Salimans2", Stop.Tolerance=1e-3, CPUs=1)
-  #VBtime = system.time(VariationalBayes(Model, Initial.Values, Data=MyData, Covar=NULL,
-  #                                      Iterations=1000, Method="Salimans2", Stop.Tolerance=1e-3, CPUs=1))
-  
-  #Results
-  results <- data.frame(Name = c("Gaussian beta0", "Gaussian beta1", "MCMC beta0", "MCMC beta1", "Laplace beta0", "Laplace beta1",  "VBC beta0", "VBC beta1"),
-                        Post_mean = c(INLA_result$summary.fixed$mean,list(summary(samps))[[1]][1]$statistics[1:2],INLA_result_L$summary.fixed$mean,INLA_result_VB$summary.fixed$mean))
-  results
-  
-  times <- data.frame(Name = c("Gaussian", "MCMC", "Laplace", "VBC"),
-                      time = c(Gtime[3], MCtime[3], Ltime[3], VBCtime[3]))
-  times
-  
-  resultsh <- data.frame(Name = c("Gaussian tau", "MCMC tau", "Laplace tau",   "VBC tau"),
-                        Post_mean = c(INLA_result$summary.hyperpar$mode,list(summary(samps))[[1]][1]$statistics[3],INLA_result_L$summary.hyperpar$mode,INLA_result_VB$summary.hyperpar$mode))
-  resultsh
-  
 }
 
-
-######
-dev.off()
-par(mar = c(4,2,1,1))
-hist(samps[[1]][,1],  prob = T, col = "azure1",ylim = c(0,3), ylab = "", xlab = expression(paste(beta[0])), main = "", xlim = c(-1.5, 0))
-lines(INLA_result$marginals.fixed$`(Intercept)`, xlim = c(-2, 0), ylim = c(0,3), col = "black", lty = 2, ylab = "", xlab = expression(paste(beta[0])), lwd = 2)
-#lines(INLA_result_L$marginals.fixed$`(Intercept)`, type="l", lty = 2, col = "red", lwd = 2)
-lines(INLA_result_VB$marginals.fixed$`(Intercept)`, type="l", lty = 1, col = "blue", lwd = 2)
-abline(v = b0, lwd = 3)
-
-hist(samps[[1]][,2], prob = T, col = "azure1", , ylim = c(0,4), ylab = "", xlab = expression(paste(beta[1])), main = "", xlim = c(-1, 0))
-lines(INLA_result$marginals.fixed$x, col = "black", xlim = c(-2, 0), ylim = c(0, 5), lty = 2, lwd = 2, ylab = "", xlab = expression(paste(beta[1])))
-#lines(INLA_result_L$marginals.fixed$x, type="l", lty = 2, col = "red", lwd = 2)
-lines(INLA_result_VB$marginals.fixed$x, type="l", lty = 1, col = "blue", lwd = 2)
-abline(v = b1, lwd = 3)
-
-hist(samps[[1]][,3], breaks = 1000, prob = T, col = "azure1",ylim = c(0,1.2), ylab = "", xlab = expression(paste(tau)), main = "", xlim = c(0,20) )
-lines(INLA_result$marginals.hyperpar$`Precision for ID`, col = "black", lty = 2, ylab = "",  lwd = 2)
-#lines(INLA_result_L$marginals.fixed$`(Intercept)`, type="l", lty = 2, col = "red", lwd = 2)
-lines(INLA_result_VB$marginals.hyperpar$`Precision for ID`, type="l", lty = 1, col = "blue", lwd = 2)
 
