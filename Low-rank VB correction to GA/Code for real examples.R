@@ -27,6 +27,10 @@ rrr = inla(formula,
            Ntrials=n, data=Tokyo,
            control.inla = list(strategy = "laplace"))
 
+#STAN
+
+
+
 ##Leuk
 data(Leuk)
 data1 <- Leuk
