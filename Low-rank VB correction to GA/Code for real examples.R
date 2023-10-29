@@ -12,7 +12,8 @@ r = inla(formula,
          family="binomial",
          Ntrials=n,
          data=Tokyo,
-         control.inla = list(strategy = "gaussian"))
+         control.inla = list(strategy = "gaussian",
+                             control.vb = list(enable = FALSE)))
 #INLA-VBC
 rr = inla(formula,
           family="binomial",
@@ -27,8 +28,36 @@ rrr = inla(formula,
            Ntrials=n, data=Tokyo,
            control.inla = list(strategy = "laplace"))
 
-#STAN
+####### JAGS
+library(runjags)
+model = "model {
+  for(i in 1:N){
+    y[i] ~ dbinom(p[i],trials[i])
+    logit(p[i]) = u[i]
+  }
+  
+u[1] ~ dnorm(-1.6, tau)
+u[2] ~ dnorm(-1.5, tau)
+for (t in 3:(N-1)){
+u[t] ~ dnorm(2*u[t-1] - u[t-2], tau)
+}
+u[N] ~ dnorm(-1.6, tau)
+tau ~ dgamma(25,0.10)
+}"
 
+library(tictoc)
+tic("MCMC")
+res.1 = run.jags(model = model,
+                 monitor = c("u", "tau"),
+                 data = list('y' = Tokyo$y, 'trials' = Tokyo$n, 'N' = nrow(Tokyo)),
+                 n.chains = 6,
+                 inits = list(u = rep(0.5,nrow(Tokyo))),
+                 burnin = 10^3,
+                 sample = 10^4,
+                 method = "parallel")
+
+trace <- combine.mcmc(res.1)
+toc()
 
 
 ##Leuk
