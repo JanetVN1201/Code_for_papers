@@ -1,0 +1,17 @@
+model
+    {
+    for ( i in 1:N ) {
+    lambda[i] = exp(beta0 + beta1*x[i] + u[I])
+    y[i] ~ dpois( lambda[i])
+
+    }
+
+    ### Define the priors
+    beta0 ~ dnorm( 0, 1 )
+    beta1 ~ dnorm( 0, 1 )
+    for (t in 1:N){
+     u[t] ~ dnorm(0, tau)
+     }
+     tau ~ dgamma(1,1)
+
+    }
