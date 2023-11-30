@@ -69,8 +69,8 @@ d = data.frame(yy, m, besagproper, Besag.c, b1, b2, EE)
 formula = yy ~ -1 + m + offset(log(E1)) + offset(log(E2)) +
   f(b1, model = "bym2", graph=g, scale.model=TRUE) +
   f(b2, model = "bym2", graph=g, scale.model=TRUE) +
-f(besagproper, model = "besagproper", graph=g) +
-  f(Besag.c, copy="besagproper", hyper = list(beta = list(fixed = FALSE)))
+f(besagproper, model = "besagproper", graph=g, hyper = list(theta1 = list(param = c(1,0.1)))) +
+  f(Besag.c, copy="besagproper", hyper = list(beta = list(fixed = FALSE, param = c(0,3))))
 
 
 alpha = 0.2
