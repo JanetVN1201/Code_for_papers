@@ -1,6 +1,3 @@
-# The code of the simulated correlated data 
-
-
 library(pander)
 library(SpatialEpi)
 library(BayesX)
@@ -38,6 +35,7 @@ eta1 <- 1 + x1
 alpha1 <- 0.2
 shape1 <- exp(eta1)+1
 lambda1 <- qgamma(alpha1, shape = shape1, lower.tail = FALSE, rate = 1)
+#lambda1 <- exp(eta1) #For joint mean model
 y1 <- rpois(n1, lambda1)
 y1
 
@@ -46,10 +44,11 @@ y1
 # The cases of disease 2
 a = 0.7
 n2 <- n*n.rep
-eta2 <- 1 + a*x1
+eta2 <- 3 + a*x1
 alpha2 <- 0.8
 shape2 <- exp(eta2)+1
 lambda2 <- qgamma(alpha2, shape = shape2, lower.tail = FALSE, rate = 1)
+#lambda2 <- exp(eta2) #For joint mean model
 y2 <- rpois(n2, lambda2)
 y2
 
@@ -61,7 +60,7 @@ u = c(1:67)
 alpha = 0.2
 rep_1= c(rep(1:n.rep, each = n))
 rsm = inla(formula = y1 ~ 1+
-             f(u,model = "besagproper", scale.model = T,
+             f(u,model = "besagproper",
                graph = g1, replicate = rep_1)   ,
            family = "poisson",
            data =  data.frame(u , y1),
@@ -77,7 +76,7 @@ u = c(1:67)
 alpha = 0.8
 rep_2= c(rep(1:n.rep, each = n))
 rsm2 = inla(formula = y2 ~ 1+
-              f(u,model = "besagproper", scale.model = T,
+              f(u,model = "besagproper", 
                 graph = g1, replicate = rep_1)   ,
             family = "poisson",
             data =  data.frame(u , y2),
@@ -108,10 +107,9 @@ v = Besag.c
 m = as.factor(mu)
 d = data.frame(yy,m , Besag , Besag.c, rep_i1, rep_i2, u, v)  
 
-formula = yy ~ -1 + m + f(u,model = "besagproper",
-                          graph = g1, replicate = rep_i1) + 
-  f(v,model = "besagproper",
-    graph = g1, replicate = rep_i2) +
+formula = yy ~ -1 + m + 
+  f(u, model = "besagproper", replicate = rep_i1, graph = g1) + 
+  f(v, model = "besagproper", replicate = rep_i2, graph = g1) + 
   f(Besag, model = "besagproper",graph=g1, replicate = rep_i1)+
   f(Besag.c, copy="Besag",
     hyper = list(beta = list(fixed = FALSE, params = c(0,0.001))), replicate = rep_i2)
@@ -133,7 +131,7 @@ dt = data.frame(
   DIC = c(rsm$dic$dic, rsm2$dic$dic, rsm$dic$dic + rsm2$dic$dic  ,r1$dic$dic),
   WAIC = c(rsm$waic$waic, rsm2$waic$waic, rsm$waic$waic+rsm2$waic$waic  ,r1$waic$waic))
 
-rownames(dt) <- c("Separate 1", "Separate 2", "Sum of Separates "  ,"Joint qunatile")
+rownames(dt) <- c("Separate 1", "Separate 2", "Sum of Separates "  ,"Joint")
 pander(dt)
 
 summary(r1)
