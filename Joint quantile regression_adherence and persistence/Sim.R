@@ -6,7 +6,7 @@ library(dplyr)
 library(xtable)
 
 # Working directory and read in datasets
-setwd('Quantile_joint')
+#setwd('Quantile_joint')
 
 # Solve alpha of qkumar
 CalcAlpha <- function(Kappa, q, beta) {
@@ -33,40 +33,8 @@ SimKUM <- function(n, Kappa, psi, q) {
   return(SimSample)
 }
 
-SimParams <- list(
-  nsujet = 200,   # Number of individuals
-  psi = 0.9,      # Kumaraswamy scale parameter
-  SD1 = 0.5,      # SD of random intercept
-  SD2 = 0.5,      # SD of random slope
-  rho = 0.7,      # Random intercept/slope correlation coefficient
-  gapLongi = 0.1, # Gap between longitudinal measurements
-  gap = 0.01,     # Used to generate many time points for permutation algorithm
-  followup = 5    # Follow-up time
-)
-
-GenerateParamSets <- function() {
-  # Varying parameters
-  q_val <- c(0.5, 0.75)
-  beta_0_val <- c(1.5)
-  beta_1_val <- c(-2.5, 2.5)
-  beta_2_val <- c(1.5)
-  beta_3_val <- c(0.5)
-  gamma_1_val <- c(0.1)
-  gamma_2_val <- c(-0.1)
-  phi_val <- c(-0.5, 0.5)
-  
-  ParamSets <- expand.grid(q = q_val,             # Quantile
-                           beta_0 = beta_0_val,   # Longitudinal intercept
-                           beta_1 = beta_1_val,   # Longitudinal slope
-                           beta_2 = beta_2_val,   # Longitudinal binary covariate 
-                           beta_3 = beta_3_val,   # Longitudinal continuous covariate [IGNORED FOR SIMPLICITY]
-                           gamma_1 = gamma_1_val, # Survival binary covariate [IGNORED FOR SIMPLICITY]
-                           gamma_2 = gamma_2_val, # Survival continuous covariate [IGNORED FOR SIMPLICITY]
-                           phi = phi_val)         # Association parameter
-  return(ParamSets)
-}
 # Function to perform simulation study
-SimStudy <- function(ParamSet, iteration, scenario) {
+SimStudy <- function(ParamSet, iteration, scenario, cens0, q0) {
   print(paste0("Iteration ", iteration))
   
   params <- modifyList(SimParams, as.list(ParamSet))
@@ -79,7 +47,7 @@ SimStudy <- function(ParamSet, iteration, scenario) {
   gapLongi = params[[6]]
   gap = params[[7]]
  followup = params[[8]]
- q = params[[9]]
+ q = q0
  beta_0 = params[[10]]
  beta_1 = params[[11]]
  beta_2 = params[[12]]
@@ -87,11 +55,16 @@ SimStudy <- function(ParamSet, iteration, scenario) {
  gamma_1 = params[[14]]
  gamma_2 = params[[15]]
  phi = params[[16]]
-  
+
   
   with(params, {
     Covar <- rho*SD1*SD2
     Sigma <- matrix(c(SD1^2, Covar, Covar, SD2^2), ncol = 2, nrow = 2)
+    
+    L <- t(chol(solve(Sigma)))
+    diag(L) <- log(diag(L))
+
+    theta_aa = log(phi)*0.1
     
     mestime = seq(0, followup, gap) # Measurement times
     timesLongi = mestime[which(round(mestime - round(mestime/gapLongi, 0)*gapLongi, 6) == 0)] # Visit times
@@ -119,7 +92,7 @@ SimStudy <- function(ParamSet, iteration, scenario) {
     # Permutation algorithm to generate survival times dependent on linear predictors
     #DatTmp <- permalgorithm(nsujet, nmesindiv, Xmat = matrix(c(linPredY, rep_binX, rep_ctsX), nrow = nsujet*nmesindiv),
     DatTmp <- permalgorithm(nsujet, nmesindiv, Xmat = matrix(c(linPredY), nrow = nsujet*nmesindiv),
-                            eventRandom = round(rexp(nsujet, 0.005) + 1, 0), # ~40% events
+                            eventRandom = round(rexp(nsujet, cens0) + 1, 0), # ~40% events
                             censorRandom = runif(nsujet, 1, nmesindiv), # Uniform random censoring
                             XmatNames = c("linPredY"), # Predictor for association
                             betas = c(phi)) # Association parameter and survival regression parameters
@@ -140,7 +113,7 @@ SimStudy <- function(ParamSet, iteration, scenario) {
     longDat <- sapply(longDat3[longDat3$time %in% timesLongi, -1], as.numeric)
     longDat <- as.data.frame(longDat[order(longDat[, "Id"], longDat[, "time"]), ])
     
-   print(summary(survDat))
+  #  print(paste0("Censoring percentage = ", round((1-sum(survDat$Event)/nsujet)*100,2)))
     # Plots to check feasibility of parameter combinations
     
     # Flag to control execution of plots
@@ -221,28 +194,24 @@ SimStudy <- function(ParamSet, iteration, scenario) {
     #formulaJ <- update(CoxExt$formula, Yjoint ~ . -1 + InteY + TIMEY + binXY + ctsXY +
     formulaJ <- update(CoxExt$formula, Yjoint ~ . -1 + InteY + TIMEY + binXY + ctsXY +
                          f(IDY, model = "iidkd", order = 2, n = NS*2, constr = FALSE,
-                           hyper = list(theta = list(param = c(100, 5, 5, 0)))) +
+                           hyper = list(theta = list(param = c(7, 1, 1, 0)))) +
                          f(IDY_s, WY_s, copy ="IDY") +
                          f(u1, w1, model = "iid", hyper = list(prec = list(initial = -6, fixed = TRUE)), constr = FALSE) +
-                         f(eta, copy = "u1", hyper = list(beta = list(fixed = FALSE, param = c(0, 0.16), initial = 1))))
+                         f(eta, copy = "u1", hyper = list(beta = list(fixed = FALSE, param = c(0, 1), initial = 0))))
     
     # INLA function call
-    inla.setOption(inla.timeout = 120)
     JMinla <- try(inla(verbose = FALSE,
                    formula = formulaJ,
                    family = c("qkumar", "Gaussian", CoxExt$family),
                    data = joint.DataCox,
-                   control.fixed = list(mean = 0, prec = 0.16, mean.intercept = 0, prec.intercept = 0.16),
                    control.family = list(
                      list(control.link = list(quantile = q)),
                      list(hyper = list(prec = list(initial = 12, fixed = TRUE))),
                      list()),
                    E = joint.DataCox$E..coxph,
-                   control.inla = list(restart = 25,
-                                       int.strategy = "eb",
-                                       tolerance = 0.000000001)))
+                   control.inla = list(int.strategy = "eb")))
   
-    if (!class(JMinla) == "try-error"){
+    if (!inherits(JMinla, "try-error")){
     # Extracting required summaries
     fixed <- JMinla$summary.fixed
     hyperpar <- JMinla$summary.hyperpar
@@ -253,41 +222,42 @@ SimStudy <- function(ParamSet, iteration, scenario) {
     
     combined <- bind_rows(fixed, hyperpar)
     
-    xx <- inla.iidkd.sample(10^4, JMinla, "IDY")
-    
-    VarCov <- matrix(unlist(xx), nrow = 2^2)
-    VarCovSD <- matrix(apply(VarCov,1,sd),2,2)
-    VarCov025 <- matrix(apply(VarCov,1,function(x) quantile(x, 0.025)),2,2)
-    VarCov975 <- matrix(apply(VarCov,1,function(x) quantile(x, 0.975)),2,2)
-    
-    
-    ## compute the mean
-    qq <- matrix(rowMeans(matrix(unlist(xx), nrow = 2^2)), 2, 2)
-    iSigma <- 1/sqrt(diag(Sigma))
-    Cor <- diag(iSigma) %*% Sigma %*% diag(iSigma)
+    # xx <- inla.iidkd.sample(10^4, JMinla, "IDY")
+    # 
+    # VarCov <- matrix(unlist(xx), nrow = 2^2)
+    # VarCovSD <- matrix(apply(VarCov,1,sd),2,2)
+    # VarCov025 <- matrix(apply(VarCov,1,function(x) quantile(x, 0.025)),2,2)
+    # VarCov975 <- matrix(apply(VarCov,1,function(x) quantile(x, 0.975)),2,2)
+    # 
+    # 
+    # ## compute the mean
+    # qq <- matrix(rowMeans(matrix(unlist(xx), nrow = 2^2)), 2, 2)
+    # iSigma <- 1/sqrt(diag(Sigma))
+    # Cor <- diag(iSigma) %*% Sigma %*% diag(iSigma)
     # round(dig = 3, cbind(inla = c(diag(qq), qq[lower.tri(qq)]),
     #                      true = c(sqrt(diag(Sigma)), Cor[lower.tri(Cor)])))
     
     
-    combined[combined$Parameter == "Theta1 for IDY","Parameter"] <- "SD of IDY (1)"
-    combined[combined$Parameter == "Theta2 for IDY","Parameter"] <- "SD of IDY (2)"
-    combined[combined$Parameter == "Theta3 for IDY","Parameter"] <- "rho of IDY"
-    
-    combined[combined$Parameter == "SD of IDY (1)","mean"] <- sqrt(diag(qq)[1])
-    combined[combined$Parameter == "SD of IDY (2)","mean"] <- sqrt(diag(qq)[2])
-    combined[combined$Parameter == "rho of IDY","mean"] <- qq[lower.tri(qq)]/(sqrt(diag(qq)[1])*sqrt(diag(qq)[2]))
-    
-    combined[combined$Parameter == "SD of IDY (1)","sd"] <-   VarCovSD[1,1]
-    combined[combined$Parameter == "SD of IDY (2)","sd"] <-   VarCovSD[2,2]
-    combined[combined$Parameter == "rho of IDY","sd"] <-   VarCovSD[1,2]
-    
-    combined[combined$Parameter == "SD of IDY (1)","0.025quant"] <-   VarCov025[1,1]
-    combined[combined$Parameter == "SD of IDY (2)","0.025quant"] <-   VarCov025[2,2]
-    combined[combined$Parameter == "rho of IDY","0.025quant"] <-   VarCov025[1,2]
-    
-    combined[combined$Parameter == "SD of IDY (1)","0.975quant"] <-   VarCov975[1,1]
-    combined[combined$Parameter == "SD of IDY (2)","0.975quant"] <-   VarCov975[2,2]
-    combined[combined$Parameter == "rho of IDY","0.975quant"] <-   VarCov975[1,2]
+    # combined[combined$Parameter == "Theta1 for IDY","Parameter"] <- "SD of IDY (1)"
+    # combined[combined$Parameter == "Theta2 for IDY","Parameter"] <- "SD of IDY (2)"
+    # combined[combined$Parameter == "Theta3 for IDY","Parameter"] <- "rho of IDY"
+    # 
+    # combined[combined$Parameter == "SD of IDY (1)","mean"] <- sqrt(diag(qq)[1])
+    # combined[combined$Parameter == "SD of IDY (2)","mean"] <- sqrt(diag(qq)[2])
+    # combined[combined$Parameter == "rho of IDY","mean"] <- qq[lower.tri(qq)]
+    # 
+    # combined[combined$Parameter == "SD of IDY (1)","sd"] <-   VarCovSD[1,1]
+    # combined[combined$Parameter == "SD of IDY (2)","sd"] <-   VarCovSD[2,2]
+    # combined[combined$Parameter == "rho of IDY","sd"] <-   VarCovSD[1,2]
+    # 
+    # combined[combined$Parameter == "SD of IDY (1)","0.025quant"] <-   VarCov025[1,1]
+    # combined[combined$Parameter == "SD of IDY (2)","0.025quant"] <-   VarCov025[2,2]
+    # combined[combined$Parameter == "rho of IDY","0.025quant"] <-   VarCov025[1,2]
+    # 
+    # combined[combined$Parameter == "SD of IDY (1)","0.975quant"] <-   VarCov975[1,1]
+    # combined[combined$Parameter == "SD of IDY (2)","0.975quant"] <-   VarCov975[2,2]
+    # combined[combined$Parameter == "rho of IDY","0.975quant"] <-   VarCov975[1,2]
+    # 
     
     ParamMap <- data.frame(
       Parameter = c("InteY", 
@@ -295,9 +265,9 @@ SimStudy <- function(ParamSet, iteration, scenario) {
                     "binXY", 
                     "ctsXY", 
                     "precision for qkumar observations",
-                    "SD of IDY (1)", 
-                    "SD of IDY (2)",
-                    "rho of IDY", 
+                    "Theta1 for IDY", 
+                    "Theta2 for IDY",
+                    "Theta3 for IDY", 
                     "Beta for eta",
                     "binX",
                     "ctsX"),
@@ -306,9 +276,9 @@ SimStudy <- function(ParamSet, iteration, scenario) {
                      "$\\beta_{\\text{bin}}$", 
                      "$\\beta_{\\text{cont}}$", 
                      "$\\psi$", 
-                     "$\\sigma_{b_0}$", 
-                     "$\\sigma_{b_1}$", 
-                     "$\\rho_{{b_0},{b_1}}$", 
+                     "$\\theta_{1}$", 
+                     "$\\theta_{2}$", 
+                     "$\\theta_{3}$", 
                      "$\\phi$",
                      "$\\gamma_{\\text{bin}}$",
                      "$\\gamma_{\\text{cont}}$"),
@@ -324,9 +294,9 @@ SimStudy <- function(ParamSet, iteration, scenario) {
       Parameter == "binXY" ~ beta_2,
       Parameter == "ctsXY" ~ beta_3,
       Parameter == "precision for qkumar observations" ~ psi,
-      Parameter == "SD of IDY (1)" ~ SD1,
-      Parameter == "SD of IDY (2)" ~ SD2,
-      Parameter == "rho of IDY" ~ rho, #Cor[lower.tri(Cor)]
+      Parameter == "Theta1 for IDY" ~ L[1,1],
+      Parameter == "Theta2 for IDY" ~ L[2,2],
+      Parameter == "Theta3 for IDY" ~ L[2,1], #Cor[lower.tri(Cor)]
       Parameter == "Beta for eta" ~ phi,
       Parameter == "binX" ~ gamma_1,
       Parameter == "ctsX" ~ gamma_2,
@@ -364,7 +334,7 @@ IdentifyNonStaticParams <- function(paramSets) {
 }
 
 # Function to run simulations across all parameter sets
-RunSimulations <- function(ParamSets, NSim) {
+RunSimulations <- function(ParamSets, NSim, cens0, q0) {
   AllResult <- list()
   nonStaticParams <- IdentifyNonStaticParams(ParamSets)
   
@@ -372,7 +342,7 @@ RunSimulations <- function(ParamSets, NSim) {
     set <- ParamSets[i, ]
     print(paste("Running simulation set:", i, "/", nrow(ParamSets)))
     
-    SimResult <- lapply(seq_len(NSim), function(j) SimStudy(ParamSet = set, iteration = j, scenario = i))
+    SimResult <- lapply(seq_len(NSim), function(j) SimStudy(ParamSet = set, iteration = j, scenario = i, q0 = q0, cens0 = cens0))
     CombSimRes <- CombSim(SimResult)
     
     if (nrow(CombSimRes) > 0 && "TableLabel" %in% colnames(CombSimRes)) {
