@@ -2,7 +2,7 @@ library(sn)
 library(mvtnorm)
 
 NN = 2000
-p=2
+p = 2
 mu = rep(0,p)
 Sigma0 = matrix(c(1,0.5,0.5,1), byrow = T, ncol = p)
 s0 = c(-0.8,-0.8)
@@ -22,18 +22,6 @@ YY[i,2] = qsn(pnorm(XX[i,2], mean = 0, sd = 1), dp = unlist(params2))
 }
 
 summary(YY)
-
-x_c = cut(YY[,1], 30)
-y_c = cut(YY[,2], 30)
-z <- table(x_c, y_c)
-
-# mode0_ind = which(z == max(z), arr.ind = TRUE)
-# mode0 = c(levels(x_c)[mode0_ind[1,1]], levels(y_c)[mode0_ind[1,2]])
-
-library(plot3D)
-hist3D(z = z, border = "black")
-#image2D(z = z, border = "black")
-scatter2D(x = YY[,1], y = YY[,2], col = "lightgrey", pch = 16, cex = 0.5)
 
 Sigma0_est = matrix(c(sd(YY[,1])^2, cov(YY[,1],YY[,2]), cov(YY[,1],YY[,2]),sd(YY[,2])^2),
 byrow = T, ncol = 2)
@@ -118,8 +106,6 @@ sigma0 = Sigma0_est
 print(mu0)
 print(sigma0)
 
-# mu0 = mu
-# sigma0 = Sigma0
 y = YY
 
 results <- optim(delta, opt_f, lower = c(-0.9,-0.9), upper = c(0.9, 0.9), method = "L-BFGS-B")
