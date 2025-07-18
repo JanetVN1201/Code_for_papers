@@ -1,0 +1,3512 @@
+
+```{r}
+library(wesanderson)
+library(fields)
+library(viridisLite)
+library(RColorBrewer)
+library(magick)
+
+library(INLA)
+#library(rgdal)
+library(scales)
+library(ggplot2)
+library(sf) 
+library(terra)
+library(sp)
+library(magick)
+library(scales)
+library(patchwork)
+
+library(spatstat)
+
+library(leaflet)
+library(leafpop)
+library(leaflet.extras)
+library(htmltools)
+library(tidyverse)
+library(rnaturalearth)
+library(lattice)
+library(htmlwidgets)
+library(widgetframe)
+library(shiny)
+library(mapdata)
+#library(maptools)
+#library(rgeos)
+library(raster)
+require(devtools)
+
+library(ggmap)
+library(stars)
+library(fmesher)
+library(viridis)
+
+library(lbfgsb3c)
+library(splines)
+```
+
+# Modified inla functions.
+
++ Minor modifications to pass barrier triangles with different r. 
++ Triangles (with different r) are passed as different elements in a list.
++ I'm not using INLAspacetime, but Elias already included these changes.
++ My functions are called `...plus`
+
+
+```{r dt2 chunk1 inla.barrier.fem.plus013, include=FALSE}
+inla.barrier.fem.plus <- function (mesh, barrier.triangles) 
+  {
+  n <- length(barrier.triangles) #barrier triangles list
+  t <- length(mesh$graph$tv[, 1])
+  total_triangles <- unlist(barrier.triangles)
+  Omega <- list()
+  Omega$remaining <- setdiff(1:t, total_triangles)
+  for (k in 1:n) {
+    Omega[k+1] <- barrier.triangles[k] 
+    names(Omega)[k+1] <- paste0("barrier.triangles.", k)
+  }
+  
+    dt.fem.white <- function(mesh, subdomain) {
+        Ck <- rep(0, mesh$n)
+        for (t in subdomain) {
+            px <- mesh$graph$tv[t, ]
+            temp <- mesh$loc[px, ]
+            p1 <- t(t(temp[1, c(1, 2)]))
+            p2 <- t(t(temp[2, c(1, 2)]))
+            p3 <- t(t(temp[3, c(1, 2)]))
+            Ts <- cbind(p2 - p1, p3 - p1)
+            area <- abs(det(Ts)) * 0.5
+            for (i in 1:3) {
+                Ck[px[i]] <- Ck[px[i]] + area
+            }
+        }
+        return(Ck)
+    }
+    dt.fem.identity <- function(mesh) {
+        len <- length(mesh$graph$tv[, 1])
+        index.i <- rep(0, len * 6)
+        index.j <- rep(0, len * 6)
+        #index.q <- rep(0, len * 6)
+        Aij <- rep(0, len * 6)
+        counter <- 1
+        for (t in 1:len) {
+            px <- mesh$graph$tv[t, ]
+            temp <- mesh$loc[px, ]
+            p1 <- t(t(temp[1, c(1, 2)]))
+            p2 <- t(t(temp[2, c(1, 2)]))
+            p3 <- t(t(temp[3, c(1, 2)]))
+            Ts <- cbind(p2 - p1, p3 - p1)
+            twiceArea <- abs(det(Ts))
+            for (i in 1:3) {
+                index.i[counter] <- px[i]
+                index.j[counter] <- px[i]
+                #index.q[counter] <- px[i]
+                Aij[counter] <- (twiceArea) * 1/12
+                counter <- counter + 1
+            }
+            for (i in 1:2) {
+                for (j in (i + 1):3) {
+                  index.i[counter] <- px[i]
+                  index.j[counter] <- px[j]
+                  Aij[counter] <- (twiceArea) * 1/24
+                  counter <- counter + 1
+                  index.i[counter] <- px[j]
+                  index.j[counter] <- px[i]
+                  Aij[counter] <- (twiceArea) * 1/24
+                  counter <- counter + 1
+                }
+            }
+        }
+        I <- sparseMatrix(i = index.i, j = index.j, x = Aij, 
+            dims = c(mesh$n, mesh$n), repr = "T")
+        return(I)
+    }
+    dt.fem.laplace <- function(mesh, subdomain) {
+        Nphix <- rbind(c(-1, -1), c(1, 0), c(0, 1))
+        len <- length(subdomain)
+        index.i <- rep(0, len * 9)
+        index.j <- rep(0, len * 9)
+        Aij <- rep(0, len * 9)
+        counter <- 1
+        for (tri in subdomain) {
+            px <- mesh$graph$tv[tri, ]
+            temp <- mesh$loc[px, ]
+            p1 <- t(t(temp[1, c(1, 2)]))
+            p2 <- t(t(temp[2, c(1, 2)]))
+            p3 <- t(t(temp[3, c(1, 2)]))
+            Ts <- cbind(p2 - p1, p3 - p1)
+            TTTinv <- solve(t(Ts) %*% Ts)
+            area <- abs(det(Ts)) * 0.5
+            for (k in 1:3) {
+                for (m in 1:3) {
+                  tmp <- (3 * m + k - 4) * length(subdomain)
+                  index.i[(tmp + counter)] <- px[k]
+                  index.j[(tmp + counter)] <- px[m]
+                  Aij[(tmp + counter)] <- area * Nphix[k, c(1, 
+                    2)] %*% TTTinv %*% as.matrix(Nphix[m, c(1, 
+                    2)])
+                }
+            }
+            counter <- counter + 1
+        }
+        Dk <- sparseMatrix(i = index.i, j = index.j, x = Aij, 
+            dims = c(mesh$n, mesh$n), repr = "T")
+        return(Dk)
+    }
+    xi <- length(Omega)
+        fem <- list()
+        fem$I <- dt.fem.identity(mesh)
+        fem$D <- list()
+        fem$C <- list()
+        for (k in 1:xi) {
+            fem$D[[k]] <- dt.fem.laplace(mesh, Omega[[k]])
+        }
+        for (k in 1:xi) {
+            fem$C[[k]] <- dt.fem.white(mesh, Omega[[k]])
+        }
+        fem$hdim <- xi
+    
+    return(fem)
+}
+
+inla.barrier.q <- function (fem, ranges, sigma = 1, envir = NULL) 
+{
+    if (is.null(ranges)) 
+        stop("ranges cannot be NULL")
+    if (any(is.na(ranges))) 
+        stop("No range can be NA")
+    xi <- length(ranges)
+    if (xi != length(fem$D)) {
+        print("inla.barrier.q has encountered an error. Will stop.")
+        stop("Ranges do no correspond to fem")
+    }
+    if (any(ranges < 0.001)) {
+        warning("This hyper parameter value may fail. A very small maximum edge length needed in the mesh.")
+    }
+    Cdiag <- ranges[1]^2 * fem$C[[1]]
+    if (xi > 1) {
+        for (k in 2:xi) {
+            Cdiag <- Cdiag + ranges[k]^2 * fem$C[[k]]
+        }
+    }
+    N <- length(Cdiag)
+    Cinv <- sparseMatrix(i = 1:N, j = 1:N, x = 1/Cdiag, dims = c(N, 
+        N), repr = "T")
+    A <- fem$I
+    for (k in 1:xi) {
+        A <- A + (ranges[k]^2/8) * fem$D[[k]]
+    }
+    Q <- inla.as.sparse(t(A) %*% Cinv %*% A * (1/sigma^2)/pi * 
+        2 * 3)
+    if (is.environment(envir)) {
+        if (!exists("cache.done", envir = envir)) {
+            Qx.idx <- which(Q@i <= Q@j)
+            assign("Qx.idx", Qx.idx, envir = envir)
+            assign("cache.done", TRUE, envir = envir)
+        }
+        else {
+            Qx.idx <- get("Qx.idx", envir = envir)
+        }
+        return(Q@x[Qx.idx])
+    }
+    else {
+        return(Q)
+    }
+}
+
+inla.barrier.pcmatern.plus <- function (mesh, fem, barrier.triangles, prior.range, prior.sigma, range.fraction = 0.2) 
+{
+    if (missing(prior.range)) {
+        warning("Arbitrary prior values chosen automatically. This may suffice for a first attempt, \n            but should be changed in any serious analysis.")
+        prior.range <- c(diff(range(mesh$loc[, 1]))/5, 0.5)
+    }
+    if (missing(prior.sigma)) {
+        prior.sigma <- c(1, 0.5) 
+    }
+    stopifnot(inherits(mesh, "inla.mesh"))
+    stopifnot(range.fraction > 1e-06)
+
+    barrier.rgeneric.model <- function(cmd = c("graph", "Q", 
+        "mu", "initial", "log.norm.const", "log.prior", "quit"), 
+        theta = NULL) {
+        envir = parent.env(environment())
+        prior.sigma <- obj$prior.sigma
+        prior.range <- obj$prior.range
+        fem <- obj$fem
+        inla.barrier.q <- obj$inla.barrier.q
+        range.fraction <- obj$range.fraction
+        initial <- function(theta) {
+            initial.theta <- c()
+            if (!is.na(prior.sigma[2])) {
+                initial.theta <- c(0, initial.theta)
+            }
+            if (!is.na(prior.range[2])) {
+                initial.theta <- c(initial.theta, 0)
+            }
+            return(initial.theta)
+        }
+        log.prior <- function(theta) {
+            val <- 0
+            if (!is.na(prior.sigma[2])) {
+                lambda0 <- -log(prior.sigma[2])/prior.sigma[1]
+                val <- val + log(lambda0) - lambda0 * exp(theta[1]) + 
+                  theta[1]
+                theta.ran <- theta[-1]
+            }
+            else {
+                theta.ran <- theta
+            }
+            if (!is.na(prior.range[2])) {
+                lambda1 <- -log(prior.range[2]) * prior.range[1]
+                for (logrange in theta.ran) {
+                  val <- val + log(lambda1) - lambda1 * exp(-logrange) + 
+                    -logrange
+                }
+            }
+            return(val)
+        }
+        Q <- function(theta) {
+            theta.full <- theta
+            if (is.na(prior.sigma[2])) {
+                theta.full <- c(log(prior.sigma[1]), theta.full)
+            }
+            if (is.na(prior.range[2])) {
+                theta.full <- c(theta.full, log(prior.range[1]))
+            }
+            stopifnot(length(theta.full) == 2)
+            Q <- inla.barrier.q(fem = fem, ranges = exp(theta.full[2]) * 
+                c(1, range.fraction), sigma = exp(theta.full[1]), 
+                envir = envir) #ENVIR MAKES IT WORK
+            return(Q)
+        }
+        graph <- function(theta) {
+            require(methods)
+            ntheta <- 2
+            theta.full <- (1:ntheta)/3.217233456
+            G1 <- inla.barrier.q(fem = fem, ranges = exp(theta.full[2]) * 
+                c(1, range.fraction), sigma = exp(theta.full[1]))
+            G1[G1 != 0] <- 1
+            theta.full <- (1:ntheta)^2/12.1543534
+            G2 <- inla.barrier.q(fem = fem, ranges = exp(theta.full[2]) * 
+                c(1, range.fraction), sigma = exp(theta.full[1]))
+            G2[G2 != 0] <- 1
+            return(G1 + G2)
+        }
+        mu <- function(theta) numeric(0)
+        log.norm.const <- function(theta) numeric(0)
+        quit <- function(theta) invisible()
+        val <- do.call(match.arg(cmd), args = list(theta))
+        return(val)
+    }
+#   barrier.triangles <- unique(barrier.triangles)
+    obj <- list()
+    obj$prior.sigma <- prior.sigma
+    obj$prior.range <- prior.range
+    obj$range.fraction <- range.fraction
+    obj$inla.barrier.q <- inla.barrier.q
+    obj$fem <- fem
+    barrier.model <- inla.rgeneric.define(model = barrier.rgeneric.model, 
+        optimize = TRUE, obj = obj)
+    if (!is.na(prior.sigma[2]) && !is.na(prior.range[2])) {
+    }
+    else {
+        warning("Not properly tested, let us know if you have problems.")
+    }
+    return(barrier.model)
+}
+```
+
+# SPDE book functions
+
+```{r dt2 chunk1 inla.barrier.fem.plus013, include=FALSE}
+book.rMatern <- function(n, coords, sigma=1, range, kappa = sqrt(8*nu)/range, variance = sigma^2, nu=1) {
+    m <- as.matrix(dist(coords))
+    m <- exp((1-nu)*log(2) + nu*log(kappa*m)-
+             lgamma(nu))*besselK(m*kappa, nu)
+    diag(m) <- 1
+    return(drop(crossprod(chol(variance*m),
+                          matrix(rnorm(nrow(coords)*n), ncol=n))))
+}
+
+book.rspde <- function(coords, sigma=1, range, variance=sigma^2, alpha=2, kappa = sqrt(8*(alpha-1))/range, n=1, mesh, 
+                  verbose=FALSE, seed, return.attributes=FALSE) {
+    t0 <- Sys.time()
+    theta <- c(-0.5*log(4*pi*variance*kappa^2), log(kappa))
+    if (verbose) cat('theta =', theta, '\n')
+    if (missing(mesh)) {
+        mesh.pars <- c(0.5, 1, 0.1, 0.5, 1)*sqrt(alpha-ncol(coords)/2)/kappa 
+        if (verbose) cat('mesh.pars =', mesh.pars, '\n')
+        attributes <- list(
+            mesh=inla.mesh.2d(
+                coords[chull(coords), ], max.edge=mesh.pars[1:2], 
+                cutoff=mesh.pars[3], offset=mesh.pars[4:5]))
+        if (verbose) cat('n.mesh =', attributes$mesh$n, '\n')
+    }
+    else attributes <- list(mesh=mesh)
+    attributes$spde <- inla.spde2.matern(attributes$mesh, alpha=alpha)
+    attributes$Q <- inla.spde2.precision(attributes$spde, theta=theta)
+    attributes$A <- inla.mesh.project(mesh=attributes$mesh, loc=coords)$A
+    if (n==1) 
+        result <- drop(attributes$A%*%inla.qsample(
+            Q=attributes$Q,
+            constr=attributes$spde$f$extraconstr))
+    t1 <- Sys.time() 
+    result <- inla.qsample(n, attributes$Q, 
+                           seed=ifelse(missing(seed), 0, seed), 
+                           constr=attributes$spde$f$extraconstr) 
+    if (nrow(result)<nrow(attributes$A)) {
+        result <- rbind(result, matrix(
+            NA, nrow(attributes$A)-nrow(result), ncol(result)))
+        dimnames(result)[[1]] <- paste('x', 1:nrow(result), sep='')
+        for (j in 1:ncol(result)) 
+            result[, j] <- drop(attributes$A%*%
+                                result[1:ncol(attributes$A),j])
+    }
+    else {
+        for (j in 1:ncol(result)) 
+            result[1:nrow(attributes$A), j] <-
+                drop(attributes$A%*%result[,j]) 
+        result <- result[1:nrow(attributes$A), ]
+    }
+    t2 <- Sys.time()
+    attributes$cpu <- c(prep=t1-t0, sample=t2-t1, total=t2-t0)
+    if (return.attributes) 
+        attributes(result) <- c(attributes(result), attributes)
+    return(drop(result))
+}
+
+book.mesh.dual <- function(mesh) {
+    if (mesh$manifold=='R2') {
+        ce <- t(sapply(1:nrow(mesh$graph$tv), function(i)
+            colMeans(mesh$loc[mesh$graph$tv[i, ], 1:2])))
+        library(parallel)
+        pls <- mclapply(1:mesh$n, function(i) {
+            p <- unique(Reduce('rbind', lapply(1:3, function(k) {
+                j <- which(mesh$graph$tv[,k]==i)
+                if (length(j)>0) 
+                    return(rbind(ce[j, , drop=FALSE],
+                                 cbind(mesh$loc[mesh$graph$tv[j, k], 1] +
+                                       mesh$loc[mesh$graph$tv[j, c(2:3,1)[k]], 1], 
+                                       mesh$loc[mesh$graph$tv[j, k], 2] +
+                                       mesh$loc[mesh$graph$tv[j, c(2:3,1)[k]], 2])/2))
+                else return(ce[j, , drop=FALSE])
+            })))
+            j1 <- which(mesh$segm$bnd$idx[,1]==i)
+            j2 <- which(mesh$segm$bnd$idx[,2]==i)
+            if ((length(j1)>0) | (length(j2)>0)) {
+                p <- unique(rbind(mesh$loc[i, 1:2], p,
+                                  mesh$loc[mesh$segm$bnd$idx[j1, 1], 1:2]/2 +
+                                  mesh$loc[mesh$segm$bnd$idx[j1, 2], 1:2]/2, 
+                                  mesh$loc[mesh$segm$bnd$idx[j2, 1], 1:2]/2 +
+                                  mesh$loc[mesh$segm$bnd$idx[j2, 2], 1:2]/2))
+                yy <- p[,2]-mean(p[,2])/2-mesh$loc[i, 2]/2
+                xx <- p[,1]-mean(p[,1])/2-mesh$loc[i, 1]/2
+            }
+            else {
+                yy <- p[,2]-mesh$loc[i, 2]
+                xx <- p[,1]-mesh$loc[i, 1]
+            }
+            Polygon(p[order(atan2(yy,xx)), ])
+        })
+        return(SpatialPolygons(lapply(1:mesh$n, function(i)
+            Polygons(list(pls[[i]]), i))))
+    }
+    else stop("It only works for R2!")
+}
+
+genColor <- function(n, type=c('red', 'green', 'blue'), u=NULL) {
+    cbp <- list(
+        red = list(c(255, 254, 252, 252, 251, 239, 203, 165, 103), 
+                   c(245, 224, 187, 146, 106, 59, 24, 15, 0), 
+                   c(240, 210, 161, 114, 74, 44, 29, 21, 13)), 
+        green = list(c(247, 229, 199, 161, 116, 65, 35, 0, 0), 
+                     c(252, 245, 233, 217, 196, 171, 139, 109, 68), 
+                     c(245, 224, 192, 155, 118, 93, 69, 44, 27)), 
+        blue = list(c(247, 222, 198, 158, 107, 66, 33, 8, 8), 
+                    c(251, 235, 219, 202, 174, 146, 113, 81, 48), 
+                    c(255, 247, 239, 225, 214, 198, 181, 156, 107)))
+    if (n<2) stop("Works for 'n>2'!")
+    if (is.null(u))
+        u <- 0:(n-1)/(n-1)
+    u0 <- 0:8/8
+    i <- findInterval(u, u0, TRUE)
+    k <- pmatch(match.arg(type), c('red', 'green', 'blue'))
+    w1 <- 8*(u0[i+1]-u)/255; w2 <- 8*(u-u0[i])/255
+    rgb(cbp[[k]][[1]][i]*w1 + cbp[[k]][[1]][i+1]*w2, 
+        cbp[[k]][[2]][i]*w1 + cbp[[k]][[2]][i+1]*w2, 
+        cbp[[k]][[3]][i]*w1 + cbp[[k]][[3]][i+1]*w2)
+}
+
+plot.dgTMatrix <- function(x, y, ...) {
+    cl <- match.call()
+    if (is.null(cl$digits))
+        digits <- 2
+    z <- sort(unique(round(x@x, digits)))
+    nz <- length(z)
+    n1 <- sum(z<0)
+    n2 <- sum(z>0)
+    if (is.null(cl$colors)) 
+        if (any(c(n1,n2)==0)) 
+            colors <- gray(0.9*(1-(z-min(z))/diff(range(z))))
+        else
+            colors <- c(genColor(n1, 'red', z[z<0]/min(z)),
+                        rep('white', nz-n1-n2),
+                        genColor(n2, 'blue', z[z>0]/max(z)))
+    z.breaks <- c(z[1]-diff(z[1:2])/2,
+                  z[-nz]/2 + z[-1]/2,
+                  z[nz]+diff(z[nz-1:0])/2)
+    x@x <- round(x@x, digits)
+    image(x, at=z.breaks, col.regions=colors, ...)
+}
+
+book.plot.field <- function(field, mesh, projector, xlim, ylim, 
+			    dims=c(300,300), poly, asp = 1, 
+			    axes = FALSE, xlab = '', ylab = '', 
+			    col = book.color.c(), ...){
+  ## you can supply field as a matrix vector or like a named list with 'x', 'y' and 'z' as for image
+  ## when field is a vector, it will project it using projector, assuming projector will create a matrix 
+  ## when mesh is supplied and projector not, projector will be created and used to project field
+  if (missing(mesh)) {
+    if (missing(projector)) {
+      if (missing(xlim) | missing(ylim)) {
+        image.plot(field, asp = asp, axes = axes, 
+                   xlab = xlab, ylab = ylab, col = col, ...)
+      } else {
+        image.plot(field, xlim = xlim, ylim = ylim, asp = asp, 
+                   axes = axes, xlab = xlab, ylab = ylab, col = col, ...)
+      }
+    } else {
+      if (missing(xlim)) xlim <- range(projector$x)
+      if (missing(ylim)) ylim <- range(projector$y)
+      field.proj <- inla.mesh.project(projector, field)
+      image.plot(x = projector$x, y = projector$y, z = field.proj, 
+                 asp=asp, axes=axes, xlab = xlab, ylab = ylab, 
+                 col=col, xlim=xlim, ylim=ylim, ...)
+    }
+  } else {
+    if (missing(xlim)) xlim <- range(mesh$loc[,1])
+    if (missing(ylim)) ylim <- range(mesh$loc[,2])
+    projector <- inla.mesh.projector(mesh, xlim = xlim,
+                                     ylim = ylim, dims=dims)
+    field.proj <- inla.mesh.project(projector, field)
+    image.plot(x = projector$x, y = projector$y, z = field.proj, 
+               asp=asp, axes=axes, xlab = xlab, ylab = ylab, col=col, ...)
+  }
+  if (!missing(poly)) 
+      plot(poly, add = TRUE, col = 'grey')
+}
+
+## Functions for barrier models
+
+## Find the correlation of precision Q (defined on mesh) at location 
+book.spatial.correlation <- function(Q, location, mesh) {
+  ## The marginal standard deviations
+  sd <- sqrt(diag(inla.qinv(Q)))
+
+  ## Create a fake A matrix, to extract the closest mesh node index
+  A.tmp <- inla.spde.make.A(mesh = mesh,
+    loc = matrix(c(location[1], location[2]), 1, 2))
+  id.node = which.max(A.tmp[1, ])
+
+  ## Solve a matrix system to find just one column of the covariance matrix
+  Inode <- rep(0, dim(Q)[1])
+  Inode[id.node] <- 1
+  covar.column <- solve(Q, Inode)
+  corr <- drop(matrix(covar.column)) / (sd * sd[id.node])
+  return(corr)
+}
+
+## Continuous and discrete colour scales for the book
+# n=8; plot(1:n, col=brewer.pal(n = n, name = "Paired"))
+
+# Continuous
+book.color.c = function(n = 201) {
+  return(viridis(n))
+}
+
+# Continuous (alternative)
+book.color.c2 = function(n = 201) {
+  return(magma(n))
+}
+
+# Discrete from a continuous
+book.color.dc = function(n = 11) {
+  return(viridis(n))
+}
+
+# Discrete (cannot be interpolated)
+book.color.d = function(n=4) {
+  return(brewer.pal(n = n, name = "Paired"))
+}
+
+```
+
+# To draw geometries
+
+Functions to build toy example, and plot some results from the Transparent Barrier Model (TBM), and stationary model.
+
+```{r}
+crs_longlat <- CRS("+proj=longlat +datum=WGS84")
+crs_km <- CRS("+proj=utm +zone=39 ellps=WGS84 +units=km")
+```
+
+```{r dt2 chunk7 9}
+## --------------------------------------------------------------------------------
+local.plot.field = function(field, pal = plasma(50), ...){
+  xlim = c(2, 8); ylim = xlim;
+  proj = inla.mesh.projector(mesh, xlim = xlim, 
+                             ylim = ylim, dims=c(300, 300))
+  # - Can project from the mesh onto a 300x300 grid 
+  #   for plots
+  field.proj = inla.mesh.project(proj, field)
+  # - Do the projection
+  image.plot(list(x = proj$x, y=proj$y, z = field.proj), 
+             xlim = xlim, ylim = ylim, col = pal, ...)  
+  # - Use image.plot to get nice colors and legend
+}
+
+local.square.polygon <- function(xlim, ylim){
+# - output is a square
+  xlim = range(xlim); ylim = range(ylim)
+  corner1 = c(xlim[1], ylim[2])
+  corner2 = c(xlim[2], ylim[1])
+  poly = Polygon(rbind(corner1, c(corner1[1], corner2[2]), corner2, c(corner2[1], corner1[2]), corner1), hole = FALSE)
+  return(SpatialPolygons(list(Polygons(list(poly), ID = runif(1)))))
+}
+
+local.square.polygon_T = function(xlim, ylim){
+# - output is a square
+  xlim = range(xlim); ylim = range(ylim)
+  corner1 = c(xlim[1], ylim[2])
+  corner2 = c(xlim[2], ylim[1])
+  poly = Polygon(rbind(corner1, c(corner1[1], corner2[2]), corner2, c(corner2[1], corner1[2]), corner1), hole = TRUE)
+  return(poly)
+}
+```
+
+## fx.pre.field
+
+Draw toy geometry, mesh and simulate data.
+
+```{r}
+fx.pre.field <- function(
+    smalldist = 0.5, 
+    width = c(0.4, 0.4), 
+    max.edge.length = 0.4,
+    set.inla.seed = 2303,
+    loc.data = FALSE,
+    n = 100 # only if loc.data is TRUE
+    ){
+  
+  poly1 <- local.square.polygon(xlim=c(-1, 5-smalldist/2), 
+                          ylim=5+width[1]*c(-.5, .5))
+  poly2 <- local.square.polygon(xlim=c(5+smalldist/2, 11), 
+                          ylim=5+width[2]*c(-.5, .5))
+  poly.original <- SpatialPolygons(c(poly1@polygons, poly2@polygons))
+  
+  loc1 <- matrix(c(0,0, 10,0, 0,10, 10,10), 4, 2, byrow = T)
+  
+  seg <- inla.sp2segment(poly.original)
+# - Transforms a SpatialPolygon to an "inla polygon"
+  mesh <- inla.mesh.2d(loc=loc1, interior = seg, 
+                    max.e = max.edge.length, offset=1)
+
+  tl <- length(mesh$graph$tv[,1])
+# - the number of triangles in the mesh
+  posTri <- matrix(0, tl, 2)
+
+  for (t in 1:tl){
+    temp = mesh$loc[mesh$graph$tv[t, ], ]
+    posTri[t,] = colMeans(temp)[c(1,2)] 
+    }
+
+  posTri <- SpatialPoints(posTri)
+# - the positions of the triangle centers
+
+  bar.original <- over(poly.original, SpatialPoints(posTri), returnList=T)
+# - checking which mesh triangles are inside the barrier area
+  bar.original <- unlist(bar.original)
+  poly.bar.orginal <- inla.barrier.polygon(mesh, barrier.triangles = bar.original)
+# - the Barrier model's polygon
+# - in most cases this should be the same as poly.original
+
+# BARRIER 1
+  bar1 <- over(poly1, SpatialPoints(posTri), returnList=T)
+# - checking which mesh triangles are inside the barrier area
+  bar1 <- unlist(bar1)
+  poly.bar1 <- inla.barrier.polygon(mesh, barrier.triangles = bar1)
+# - the Barrier model's polygon
+# - in most cases this should be the same as poly.original
+
+# BARRIER 2
+  bar2 <- over(poly2, SpatialPoints(posTri), returnList=T)
+# - checking which mesh triangles are inside the barrier area
+  bar2 <- unlist(bar2)
+  poly.bar2 <- inla.barrier.polygon(mesh, barrier.triangles = bar2)
+
+# PLOTS
+  mat <-  inla.barrier.fem.plus(mesh, list(bar1, bar2))
+  
+  if(loc.data == TRUE){
+    
+    poly1_h <- local.square.polygon_T(xlim=c(2, 5-smalldist/2), 
+                          ylim=5+width[1]*c(-.5, .5))
+
+    poly2_h <- local.square.polygon_T(xlim=c(5+smalldist/2, 8), 
+                          ylim=5+width[2]*c(-.5, .5))
+    loc1 <- matrix(c(2,2, 8,2, 8,8, 2,8), 4, 2, byrow = T)
+
+    locp <- Polygon(loc1, hole = FALSE)
+    
+    poly.water <- SpatialPolygons(list(Polygons(list(locp, poly1_h, poly2_h), '0')))
+    poly.water_sf <- st_as_sf(poly.water)
+    
+    set.seed(set.inla.seed)
+    loc.data <- spsample(x = poly.water, n = n, type = "random")
+    loc.data_sf <- st_as_sf(loc.data)
+    loc.data <- loc.data@coords
+    
+    mesh_h <-inla.mesh.2d(boundary = poly.water_sf, 
+             max.e = max.edge.length, offset=1)
+    
+    return(list(poly1 = poly1, 
+              poly2 = poly2, 
+              poly.original = poly.original, 
+              mesh = mesh, 
+              posTri = posTri, 
+              poly.bar.orginal = poly.bar.orginal, 
+              bar1 = bar1, 
+              bar2 = bar2, 
+              mat = mat,
+              loc.data = loc.data,
+              poly.water = poly.water,
+              poly.water_sf = poly.water_sf,
+              mesh_h = mesh_h,
+              loc.data_sf = loc.data_sf))
+  }
+  
+  if(loc.data == FALSE) {
+   
+    return(list(poly1 = poly1, 
+              poly2 = poly2, 
+              poly.original = poly.original, 
+              mesh = mesh, 
+              posTri = posTri, 
+              poly.bar.orginal = poly.bar.orginal, 
+              bar1 = bar1, 
+              bar2 = bar2, 
+              mat = mat)) 
+  }
+}
+
+```
+
+Test `fx.pre.field`
+
+```{r}
+pre.field <- fx.pre.field(loc.data = T)
+
+# plot(st_geometry(poly.water_sf))
+ggplot(data = pre.field$poly.water_sf) + 
+      inlabru::gg(pre.field$mesh_h) + #plot mesh_hb alternatively
+      geom_sf(data =pre.field$loc.data_sf,
+          col='purple',size=1.7,alpha=0.5)  
+```
+
+## transparency
+
+Function to build barrier model with different transparencies and also compare with stationary model.
+
+```{r dt2 chunk19}
+transparency <- function(mesh = mesh, fem = fem, 
+                         barrier.triangles = barrier.triangles, 
+                     prior.range = c(1, 0.5), prior.sigma = c(1, 0.1),
+                     range.fraction = range.fraction,
+                     range = 3,
+                     set.inla.seed = 2303, # make sure is the same as prev. fx if loc.data = T
+                     loc.data = loc.data, 
+                     sigma.u = 1, sigma.epsilon = 0.2,
+                     poly.original = poly.bar.orginal,
+                     prior.range.st = c(1, 0.5),    
+                     prior.sigma.st = c(1, 0.1),
+                     return.list = TRUE) {
+  
+  # field = TRUE has to be true to start
+  barrier.model <- inla.barrier.pcmatern.plus(mesh, fem, barrier.triangles, 
+                                              prior.range, prior.sigma, 
+                                              range.fraction)
+  # range fraction has to have the same length as barrier triangles
+  Q <- inla.rgeneric.q(barrier.model, "Q", theta = c(0, log(range)))
+  u <- suppressWarnings(inla.qsample(n=1, Q=Q, seed = set.inla.seed))
+  u <- u[ ,1]
+    
+  A.data <- inla.spde.make.A(mesh, loc.data)
+  #Q from mydiff.r function
+    
+  u.data <- A.data %*% u
+  
+  df <- data.frame(loc.data)
+  names(df) <- c('locx', 'locy')
+  df$y <- drop(sigma.u * u.data + sigma.epsilon * rnorm(nrow(df)))
+  
+    
+  stk <- inla.stack(data=list(y=df$y), 
+                    A=list(A.data, 1),
+                    effects=list(s=1:mesh$n, 
+                                 intercept=rep(1, nrow(df))), 
+                    remove.unused = FALSE, 
+                    tag='est')
+
+    
+  formula <- y ~ 0 + intercept + f(s, model = barrier.model)
+  # - The spatial model component is different from stationary
+  # - The rest of the model setup is the same as in the stationary case!
+  # - - e.g. the inla(...) call below is the same, 
+  #     only this formula is different
+  
+    
+  res.barrier <- inla(formula, data = inla.stack.data(stk),
+                        control.predictor = list(A = inla.stack.A(stk)),
+                        family = 'gaussian',
+                        control.family = list(hyper = list(
+                          prec = list(prior = "pc.prec", fixed = FALSE, param = c(0.2,0.5)))),
+                        control.mode=list(restart=T, theta=c(3.2, 0.4, 1.6)))
+    
+  model.stat <- inla.spde2.pcmatern(mesh, 
+                                    prior.range = c(prior.range.st[1], prior.range.st[2]),
+                                    prior.sigma = c(prior.sigma.st[1], prior.sigma.st[2]))
+  
+  formula.st <- y ~ 0 + intercept + f(s, model=model.stat)
+  
+  res.stationary <- inla(formula.st, data=inla.stack.data(stk),
+            control.predictor=list(A = inla.stack.A(stk)),
+            family = 'gaussian',
+            control.family = list(hyper = list(prec = list(
+              prior = "pc.prec", fixed = FALSE, 
+              param = c(0.2,0.5)))),
+            control.mode=list(restart=T, theta=c(4,-1.7,0.25)))
+  
+  if (return.list == TRUE) {
+    
+    list.field <- list(barrier.model = barrier.model, Q = Q, sample = u)
+    pos.bm <- list(df = df, res = res.barrier)
+    pos.st <- list(res = res.stationary)
+    
+    return(list(list.field = list.field, pos.bm = pos.bm, pos.st = pos.st))
+  }
+                     
+}
+
+```
+
+Test `transparency`
+
+```{r eval=FALSE}
+pf <- pre.field
+mesh <- pf$mesh 
+fem <- pf$mat 
+barrier.triangles <- list(pf$bar1, pf$bar2)
+range.fraction <- c(0.1, 0.1)
+loc.data <- pf$loc.data
+poly.bar.orginal <- pf$poly.bar.orginal
+
+
+trans <- transparency(mesh = mesh, fem = fem, 
+                     barrier.triangles = barrier.triangles, 
+                     prior.range = c(1, 0.5), prior.sigma = c(1, 0.1),
+                     range.fraction = range.fraction,
+                     range = 3,
+                     set.inla.seed = 2303,
+                     loc.data = loc.data, 
+                     sigma.u = 1, sigma.epsilon = 0.2,
+                     poly.original = poly.bar.orginal,
+                     prior.range.st = c(1, 0.5),    
+                     prior.sigma.st = c(1, 0.1),
+                     return.list = TRUE)
+```
+
+## plot.transparency
+
+Make GIFs from `transparency`
+
+```{r}
+plot.transparency <- function(nfrac = 1, # length of fractions for range
+                              max.frac = 1, # 1/max.frac
+                              left.poly = 0.1,
+                              poly.bar.orginal = poly.bar.orginal,
+                              range = 3,
+                              fps = 1,
+                              set.inla.seed = 2303,
+                              col=alpha('grey', 0),
+                              plot.points = points(loc.data, 
+                                              pch = 16, 
+                                              cex = 0.8, 
+                                              col=alpha('gray', 0)),
+                              gif.path = "gif/",
+                              pal.field = turbo(50),
+                              pal.pos.mean = turbo(50),
+                              pal.pos.sd = turbo(50),
+                              pal.pos.q25 = turbo(50),
+                              pal.pos.q50 = turbo(50),
+                              pal.pos.q975 = turbo(50),
+                              
+                              pal.pos.mean.st = turbo(50),
+                              pal.pos.sd.st = turbo(50),
+                              pal.pos.q25.st = turbo(50),
+                              pal.pos.q50.st = turbo(50),
+                              pal.pos.q975.st = turbo(50),
+                              ...
+    ){
+  dir_out_f <- file.path(tempdir(), "truefield_gif")
+  dir.create(dir_out_f, recursive = TRUE)
+  
+  # barrier model
+  dir_out_pm <- file.path(tempdir(), "posmean_gif")
+  dir.create(dir_out_pm, recursive = TRUE)
+  
+  dir_out_sd <- file.path(tempdir(), "possd_gif")
+  dir.create(dir_out_sd, recursive = TRUE)
+  
+  dir_out_q25 <- file.path(tempdir(), "posq25_gif")
+  dir.create(dir_out_q25, recursive = TRUE)
+  
+  dir_out_q5 <- file.path(tempdir(), "posq5_gif")
+  dir.create(dir_out_q5, recursive = TRUE)
+  
+  dir_out_q975 <- file.path(tempdir(), "posq975_gif")
+  dir.create(dir_out_q975, recursive = TRUE)
+  
+  # stationary model
+  dir_out_s <- file.path(tempdir(), "statmodel_gif")
+  dir.create(dir_out_s, recursive = TRUE)
+  
+  dir_out_st.sd <- file.path(tempdir(), "st.sd_gif")
+  dir.create(dir_out_st.sd, recursive = TRUE)
+  
+  dir_out_st.q25 <- file.path(tempdir(), "pos.st.q25_gif")
+  dir.create(dir_out_st.q25, recursive = TRUE)
+  
+  dir_out_st.q5 <- file.path(tempdir(), "pos.st.q5_gif")
+  dir.create(dir_out_st.q5, recursive = TRUE)
+  
+  dir_out_st.q975 <- file.path(tempdir(), "pos.st.q975_gif")
+  dir.create(dir_out_st.q975, recursive = TRUE)
+  
+  fr <- seq(from = left.poly, to = max.frac, length = nfrac)/max.frac
+  if (fr[1] < left.poly) fr[1] <- left.poly
+  for (r in 1:nfrac) {
+    f <- fr[r]
+    range.fraction <- c(left.poly, f)
+    trans <- transparency(mesh = mesh, fem = fem, 
+                barrier.triangles = barrier.triangles, 
+                prior.range = c(1, 0.5), prior.sigma = c(1, 0.1),
+                range.fraction = c(left.poly, f),
+                range = range,
+                set.inla.seed = set.inla.seed, # make sure is the same as prev. fx if loc.data = T
+                loc.data = loc.data, 
+                sigma.u = 1, sigma.epsilon = 0.2,
+                poly.original = poly.bar.orginal,
+                prior.range.st = c(1, 0.5),
+                prior.sigma.st = c(1, 0.1),
+                return.list = TRUE
+    )
+    
+    # SPATIAL FIELD, u
+    fpp <- file.path(dir_out_f, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$list.field$sample, 
+                     main="Spatial posterior for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.field)
+    plot(poly.bar.orginal, add=T, col = col)
+    plot.points
+    dev.off()
+    
+    # POSTERIOR MEAN
+    fpp <- file.path(dir_out_pm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.bm$res$summary.random$s$mean, 
+                     main="Spatial mean posterior for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.mean)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD
+    fpp <- file.path(dir_out_sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.bm$res$summary.random$s$sd, 
+                     main="Spatial sd posterior for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES
+    # 0.025
+    fpp <- file.path(dir_out_q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.bm$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile posterior for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q25)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5
+    fpp <- file.path(dir_out_q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.bm$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile posterior for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q50)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975
+    fpp <- file.path(dir_out_q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.bm$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile posterior for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q975)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # SPATIAL ESTIMATE WITH STATIONARY MODEL
+    fpp <- file.path(dir_out_s, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.st$res$summary.random$s$mean,
+                     main="Spatial estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.mean.st) 
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD st
+    fpp <- file.path(dir_out_st.sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.st$res$summary.random$s$sd, 
+                     main="Spatial sd posterior for Stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.sd.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES st
+    # 0.025 st
+    fpp <- file.path(dir_out_st.q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.st$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile posterior for Stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q25.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5 st
+    fpp <- file.path(dir_out_st.q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.st$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile posterior for Stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q50.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975 st
+    fpp <- file.path(dir_out_st.q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans$pos.st$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile posterior for Stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q975.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+  }
+  
+    ## bm
+    # SPATIAL FIELD, u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_f, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "true.field.gif"))
+    
+    # POSTERIOR MEAN
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_pm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "pos.mean.gif"))
+    
+    #POS SD
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "pos.sd.gif"))
+    
+    #POS QUANTILES
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "pos.q25.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "pos.q5.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "pos.q975.gif"))
+    
+    ## st
+    # u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_s, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "stat.rnadom.mean.gif"))
+    
+    # st sd
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "pos.sd.st.gif"))
+    
+    #POS QUANTILES st
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "pos.q25.st.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "pos.q5.st.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "pos.q975.st.gif"))
+    
+    unlink(dir_out_f, recursive = T)
+    unlink(dir_out_pm, recursive = T)
+    unlink(dir_out_sd, recursive = T)
+    unlink(dir_out_q25, recursive = T)
+    unlink(dir_out_q5, recursive = T)
+    unlink(dir_out_q975, recursive = T)
+    unlink(dir_out_s, recursive = T)
+    unlink(dir_out_st.sd, recursive = T)
+    unlink(dir_out_st.q25, recursive = T)
+    unlink(dir_out_st.q5, recursive = T)
+    unlink(dir_out_st.q975, recursive = T)
+}
+```
+
+Test `plot.transparency`
+
+```{r eval=FALSE}
+plot.transparency(nfrac = 5, max.frac = 100, left.poly = 0.01,
+                  poly.bar.orginal = poly.bar.orginal, 
+                  fps = 1)
+
+plot.transparency(nfrac = 2,
+                  poly.bar.orginal = poly.bar.orginal, 
+                  fps = 1,
+                  plot.points = 
+                    points(loc.data, pch = 16, cex = 0.5, 
+                           col=alpha('black', 0.5)))
+```
+
+# Transparency functions.
+
+From the INLA code we run the model **but** we have to specify the range fraction of the barrier. The following functions are to get the range fraction from transparency ratios. 
+
+```{r}
+corr.from.Q.simplified <- function( #I am calculating A.tmp and all outside
+    Q = Q,
+    id.node = id.node.n,
+    id.coord = id.coord.n,
+    in.id.node = id.node.b) { 
+  
+  sd <- sqrt(diag(inla.qinv(Q)))
+
+
+  Inode = rep(0, dim(Q)[1]) 
+  Inode[id.node] = 1
+  covar.column = solve(Q, Inode)
+# compute correlations
+  corr = drop(matrix(covar.column)) / (sd*sd[id.node])
+  corr2points <- corr[in.id.node]
+  
+  return(corr2points)
+}
+
+corr.from.Q <- function(
+    Q = Q,
+    location = location,
+    y.up = y.up,
+    max.edge.length = max.edge.length,
+    mesh = mesh,
+    in.id.node = in.id.node) { 
+  
+  sd <- sqrt(diag(inla.qinv(Q)))
+#the 3 following are obvs the same for all
+  A.tmp <- inla.spde.make.A(mesh=mesh,
+                            loc = matrix(c(location[1,1],(y.up + max.edge.length/2)), nrow=1, ncol=2)) 
+  id.node = which.max(A.tmp[1, ])
+  id.coord <- c(mesh$loc[id.node, 1], mesh$loc[id.node, 2])
+
+  Inode = rep(0, dim(Q)[1]) 
+  Inode[id.node] = 1
+  covar.column = solve(Q, Inode)
+# compute correlations
+  corr = drop(matrix(covar.column)) / (sd*sd[id.node])
+  corr2points <- corr[in.id.node]
+  corr.from.Q <- list(corr2points = corr2points, corr = corr, id.coord = id.coord, id.node = id.node)
+  
+  return(corr.from.Q)
+}
+
+# choose the true range fraction to generate the data
+# for family = 'gaussian'
+trans.generate.q2 <- function(mesh = mesh, fem = fem, 
+                        loc.data = loc.data, 
+                        set.inla.seed = 2303, 
+                        barrier.triangles = barrier.triangles, 
+                        prior.range = c(1.44, 0.5), 
+                        prior.sigma = c(0.7, 0.5),
+                        range.fraction, #IMPORTANT,
+                        range,
+                        sigma.u = 1, sigma.epsilon = 0.2,
+                        return.list = TRUE) {
+  
+  barrier.model <- inla.barrier.pcmatern.plus(mesh, fem, barrier.triangles, 
+                                              prior.range, prior.sigma, 
+                                              range.fraction)
+  
+  # range fraction has to have the same length as barrier triangles
+  Q <- inla.rgeneric.q(barrier.model, "Q", theta = c(log(1), log(range)))
+  u <- suppressWarnings(inla.qsample(n=1, Q=Q, seed = set.inla.seed))
+  u <- u[ ,1]
+    
+  A.data <- inla.spde.make.A(mesh, loc.data)
+  #Q from mydiff.r function
+    
+  u.data <- A.data %*% u
+  
+  df <- data.frame(loc.data)
+  names(df) <- c('locx', 'locy')
+  df$y <- drop(sigma.u * u.data + sigma.epsilon * rnorm(nrow(df)))
+  
+  if (return.list == TRUE) {
+    
+  data.list <- list(df = df, Q = Q, sample = u, 
+                    A.data = A.data, barrier.model=barrier.model)
+    
+    return(list(list.field = data.list))
+  }
+                     
+}
+
+ratio.distance <- function(ratio){
+  ratio.aim <- ratio
+  trans.barrier.model <- inla.barrier.pcmatern.plus(mesh, 
+                             fem, 
+                             barrier.triangles, 
+                             prior.range,
+                             prior.sigma,
+                             range.fraction)
+  Q.trans <- inla.rgeneric.q(trans.barrier.model, "Q", 
+                             theta = c(log(prior.sigma[1]), log(prior.range[1])))
+  
+  #~ ratio, corr_b/1
+  empirical.ratio <- 
+    corr.from.Q.simplified(Q = Q.trans,
+                           id.node = id.node.n,
+                           id.coord = id.coord.n,
+                           in.id.node = id.node.b)                             
+  
+  jump.data <- (empirical.ratio - ratio.aim)^2
+  
+  return(list(trans.barrier.model = trans.barrier.model, 
+              Q.trans = Q.trans,
+              empirical.ratio = empirical.ratio,
+              sq.distance = jump.data)) 
+  
+}
+
+
+corr.from.Q.alltogether <- function(
+    Q,
+    id.node,
+    in.id.node) {
+  
+  sd <- sqrt(diag(inla.qinv(Q)))
+  Inode <- rep(0, dim(Q)[1])
+  
+  for (i in 1:length(id.node)) {
+    Inode[id.node[[i]]] <- 1
+  }
+  
+  covar.column <- solve(Q, Inode)
+
+  corr <- list()
+  corr2points <- list()
+  for (i in 1:length(id.node)) {
+    corr[[i]] = drop(matrix(covar.column))/(sd*sd[id.node[[i]]])
+    corr2points[[i]] <- corr[[i]][in.id.node[[i]]]
+  }
+  
+  return(corr2points)
+}
+
+#sd*sd[id.node[[i]]]=sd[in.id.node[[i]]]*sd[id.node[[i]]]
+
+corr.from.Q.separately <- function(
+    Q,
+    id.node,
+    in.id.node) {
+  
+  sd <- sqrt(diag(inla.qinv(Q)))
+  
+  corr2points <- list()
+  for (i in 1:length(id.node)) {
+    
+    Inode <- rep(0, dim(Q)[1]) 
+    Inode[id.node[[i]]] = 1 
+    covar.column = solve(Q, Inode)
+    corr = drop(matrix(covar.column)) / (sd*sd[id.node[[i]]])
+    corr2points[[i]] <- corr[in.id.node[[i]]]
+  }
+  
+  return(corr2points)
+}
+
+
+find.aimed.ratios <- function(x, aimed.ratio) {
+  
+  barrier.model <- inla.barrier.pcmatern.plus(
+    mesh = mesh,
+    fem = fem,
+    barrier.triangles = barrier.triangles,
+    prior.range = prior.range,
+    prior.sigma = prior.sigma,
+    range.fraction = x)
+  
+  Q <- inla.rgeneric.q(
+    barrier.model, 
+    "Q",
+    theta = c(log(prior.sigma[1]), 
+              log(prior.range[1])))
+  
+  corr.bm <- corr.from.Q.alltogether(
+    Q = Q, 
+    id.node = id.node, 
+    in.id.node = in.id.node)
+  
+  A <- diag(aimed.ratio)
+  B <- diag(corr.bm)
+  M <- A-B
+  mini <- norm(M, "F")
+  
+  return(mini)
+}
+
+find.x <- function(x) {
+  
+  barrier.model <- inla.barrier.pcmatern.plus(
+    mesh = mesh,
+    fem = fem,
+    barrier.triangles = barrier.triangles,
+    prior.range = prior.range,
+    prior.sigma = prior.sigma,
+    range.fraction = x)
+  
+  Q <- inla.rgeneric.q(
+    barrier.model, 
+    "Q",
+    theta = c(log(prior.sigma[1]), 
+              log(prior.range[1])))
+  
+  corr.bm <- corr.from.Q.alltogether(
+    Q = Q, 
+    id.node = id.node, 
+    in.id.node = in.id.node)
+  
+  A <- diag(aim)
+  B <- diag(corr.bm)
+  M <- A-B
+  mini <- norm(M, "F")
+  
+  return(mini)
+}
+
+find.ratio.from.range <- function(x, corr.nb) {
+  
+  barrier.model <- inla.barrier.pcmatern.plus(
+    mesh = mesh,
+    fem = fem,
+    barrier.triangles = barrier.triangles,
+    prior.range = prior.range,
+    prior.sigma = prior.sigma,
+    range.fraction = x)
+  
+  Q <- inla.rgeneric.q(
+    barrier.model, 
+    "Q",
+    theta = c(log(prior.sigma[1]), 
+              log(prior.range[1])))
+  
+  corr.bm <- corr.from.Q.alltogether(
+    Q = Q, 
+    id.node = id.node, 
+    in.id.node = in.id.node)
+  
+  corr <- c()
+  for (i in seq_along(corr.bm)) {
+    corr[i] <- corr.bm[[i]]/corr.nb[[i]]
+  }
+
+  B <- diag(corr, nrow = length(corr))
+  
+  return(B)
+}
+```
+
+```{r}
+local.plot.field.book <- function(field, xlim, ylim, ...){
+  if (missing(xlim)) xlim = poly.water@bbox[1, ] 
+  if (missing(ylim)) ylim = poly.water@bbox[2, ]
+  proj = inla.mesh.projector(mesh, xlim = xlim,
+    ylim = ylim, dims=c(300, 300))
+  field.proj = inla.mesh.project(proj, field)
+  image.plot(list(x = proj$x, y = proj$y, z = field.proj),
+    xlim = xlim, ylim = ylim, ...)
+}
+
+id.node.tbm <- function(mesh, 
+                        location, 
+                        npoint){ #npoint=nrow(location)
+  A.tmp <- list()
+  id.node <- list()
+  id.coord <- list()
+  for (n in 1:npoint) {
+    
+    A.tmp[[n]] <- inla.spde.make.A(mesh=mesh,
+                      loc = matrix(c(location[n,1],location[n,2]), nrow=1, ncol=2))
+
+    id.node[[n]] = which.max(A.tmp[[n]][1, ])
+    id.coord[[n]] <- c(mesh$loc[id.node[[n]], 1], mesh$loc[id.node[[n]], 2])
+  }
+  return.list <- list(id.node = id.node, id.coord = id.coord)
+  return(return.list)
+}
+
+model.tbm.plus <- function(mesh = mesh, 
+                      fem = fem, 
+                      barrier.triangles = barrier.triangles, 
+                      prior.range = c(1, 0.5), prior.sigma = c(1, 0.1),
+                      range.fraction = range.fraction,
+                      range = range,
+                      set.inla.seed = set.inla.seed, # make sure is the same as prev. fx if loc.data = T
+                      loc.data = loc.data, 
+                      sigma.u = 1, sigma.epsilon = 0.2,
+                      poly.original = poly.bar.orginal,
+                      prior.range.st = c(1, 0.5),    
+                      prior.sigma.st = c(1, 0.1),
+                      return.list = TRUE) {
+  
+  # field = TRUE has to be true to start
+  tbm <- inla.barrier.pcmatern.plus_(mesh, fem, barrier.triangles, 
+                                              prior.range, prior.sigma, 
+                                              range.fraction)
+  # range fraction has to have the same length as barrier triangles
+  Q <- inla.rgeneric.q(tbm, "Q", theta = c(log(1), log(range))) #log(1) or log(prior.sigma[1])
+  u <- suppressWarnings(inla.qsample(n=1, Q=Q, seed = set.inla.seed))
+  u <- u[ ,1]
+    
+  A.data <- inla.spde.make.A(mesh, loc.data)
+  #Q from mydiff.r function
+    
+  u.data <- A.data %*% u
+  
+  df <- data.frame(loc.data)
+  names(df) <- c('locx', 'locy')
+  df$y <- drop(sigma.u * u.data + sigma.epsilon * rnorm(nrow(df)))
+  
+    
+  stk <- inla.stack(data=list(y=df$y), 
+                    A=list(A.data, 1),
+                    effects=list(s=1:mesh$n, 
+                                 intercept=rep(1, nrow(df))), 
+                    remove.unused = FALSE, 
+                    tag='est')
+
+    
+  formula <- y ~ 0 + intercept + f(s, model = tbm)
+  # - The spatial model component is different from stationary
+  # - The rest of the model setup is the same as in the stationary case!
+  # - - e.g. the inla(...) call below is the same, 
+  #     only this formula is different
+  
+    
+  res.tbm <- inla(formula, data = inla.stack.data(stk),
+                  control.predictor = list(A = inla.stack.A(stk)),
+                  family = 'gaussian',
+                  control.family = list(hyper = list(
+                    prec = list(prior = "pc.prec", fixed = FALSE, param = c(0.2,0.5)))),
+                  control.mode=list(restart=T, theta=c(3.2, 0.4, 1.6)))
+  
+  ##barrier model (classic)
+  bm <- inla.barrier.pcmatern.plus(mesh, fem, barrier.triangles,
+                                   prior.range, prior.sigma, 
+                                   range.fraction = c(0.01, 0.01))
+  
+  formula.bm <- y ~ 0 + intercept + f(s, model = bm)
+  
+  res.bm <- inla(formula.bm, 
+                 data = inla.stack.data(stk),
+                 control.predictor = list(A = inla.stack.A(stk)),
+                 family = 'gaussian',
+                 control.family = list(hyper = list(
+                   prec = list(prior = "pc.prec", fixed = FALSE, param = c(0.2,0.5)))),
+                 control.mode=list(restart=T, theta=c(3.2, 0.4, 1.6)))
+  ##stationary
+  model.stat <- inla.spde2.pcmatern(mesh, 
+                                    prior.range = c(prior.range.st[1], prior.range.st[2]),
+                                    prior.sigma = c(prior.sigma.st[1], prior.sigma.st[2]))
+  
+  formula.st <- y ~ 0 + intercept + f(s, model=model.stat)
+  
+  res.stationary <- inla(formula.st, data=inla.stack.data(stk),
+            control.predictor=list(A = inla.stack.A(stk)),
+            family = 'gaussian',
+            control.family = list(hyper = list(prec = list(
+              prior = "pc.prec", fixed = FALSE, 
+              param = c(0.2,0.5)))),
+            control.mode=list(restart=T, theta=c(4,-1.7,0.25)))
+  
+  if (return.list == TRUE) {
+    
+    list.field <- list(barrier.model = tbm, Q = Q, sample = u, df = df)
+    pos.tbm <- list(res = res.tbm)
+    pos.bm <- list(res = res.bm)
+    pos.st <- list(res = res.stationary)
+    
+    return(list(list.field = list.field, pos.tbm = pos.tbm, pos.bm = pos.bm, pos.st = pos.st))
+  }
+                     
+}
+
+corr.covfx <- function(range.fraction = range.fraction,
+                       id.node = id.node,
+                       prior.range = prior.range) {
+  
+  barrier.model <- inla.barrier.pcmatern.plus(
+    mesh = mesh,
+    fem = fem,
+    barrier.triangles = barrier.triangles,
+    prior.range = prior.range,
+    prior.sigma = prior.sigma,
+    range.fraction = range.fraction)
+  
+  Q <- inla.rgeneric.q(
+    barrier.model, 
+    "Q",
+    theta = c(log(prior.sigma[1]), 
+              log(prior.range[1])))
+
+  sd <- sqrt(diag(inla.qinv(Q)))
+  Inode <- rep(0, dim(Q)[1])
+  Inode[id.node] <- 1
+
+  covar.column <- solve(Q, Inode)
+  corr = drop(matrix(covar.column))/(sd*sd[id.node])
+  cov = drop(matrix(covar.column))
+
+  return.list <- list(corr = corr, cov = cov)
+  return(return.list)
+}
+
+# function for all points
+id.node.tbm <- function(mesh, 
+                        location, 
+                        npoint){ #npoint=nrow(location)
+  A.tmp <- list()
+  id.node <- list()
+  id.coord <- list()
+  for (n in 1:npoint) {
+    
+    A.tmp[[n]] <- inla.spde.make.A(mesh=mesh,
+                      loc = matrix(c(location[n,1],location[n,2]), nrow=1, ncol=2))
+
+    id.node[[n]] = which.max(A.tmp[[n]][1, ])
+    id.coord[[n]] <- c(mesh$loc[id.node[[n]], 1], mesh$loc[id.node[[n]], 2])
+  }
+  return.list <- list(id.node = id.node, id.coord = id.coord)
+  return(return.list)
+}
+```
+
+```{r}
+plot.model.tbm.plus <- 
+function(trans, 
+           fr,
+           max.frac = 1,
+           min.r = min.r,
+           poly.bar.orginal = poly.bar.orginal,
+           range = range,
+           fps = 1,
+           set.inla.seed = set.inla.seed,
+                              col=alpha('grey', 0),
+                              plot.points = points(loc.data, 
+                                              pch = 16, 
+                                              cex = 0.8, 
+                                              col=alpha('gray', 0)),
+                              gif.path = "gif/",
+                              pal.field = turbo(50),
+                              pal.pos.mean = turbo(50),
+                              pal.pos.sd = turbo(50),
+                              pal.pos.q25 = turbo(50),
+                              pal.pos.q50 = turbo(50),
+                              pal.pos.q975 = turbo(50),
+                              
+                              pal.pos.mean.st = turbo(50),
+                              pal.pos.sd.st = turbo(50),
+                              pal.pos.q25.st = turbo(50),
+                              pal.pos.q50.st = turbo(50),
+                              pal.pos.q975.st = turbo(50),
+                              ...
+    ){
+  dir_out_f <- file.path(tempdir(), "truefield_gif")
+  dir.create(dir_out_f, recursive = TRUE)
+  
+  # t. barrier model
+  dir_out_pm.tbm <- file.path(tempdir(), "mean.tbm_gif")
+  dir.create(dir_out_pm.tbm, recursive = TRUE)
+  
+  dir_out_sd.tbm <- file.path(tempdir(), "sd.tbm_gif")
+  dir.create(dir_out_sd.tbm, recursive = TRUE)
+  
+  dir_out_q25.tbm <- file.path(tempdir(), "q25.tbm_gif")
+  dir.create(dir_out_q25.tbm, recursive = TRUE)
+  
+  dir_out_q5.tbm <- file.path(tempdir(), "q5.tbm_gif")
+  dir.create(dir_out_q5.tbm, recursive = TRUE)
+  
+  dir_out_q975.tbm <- file.path(tempdir(), "q975.tbm_gif")
+  dir.create(dir_out_q975.tbm, recursive = TRUE)
+  
+  # barrier model
+  dir_out_pm <- file.path(tempdir(), "mean.bm_gif")
+  dir.create(dir_out_pm, recursive = TRUE)
+  
+  dir_out_sd <- file.path(tempdir(), "sd.bm_gif")
+  dir.create(dir_out_sd, recursive = TRUE)
+  
+  dir_out_q25 <- file.path(tempdir(), "q25.bm_gif")
+  dir.create(dir_out_q25, recursive = TRUE)
+  
+  dir_out_q5 <- file.path(tempdir(), "q5.bm_gif")
+  dir.create(dir_out_q5, recursive = TRUE)
+  
+  dir_out_q975 <- file.path(tempdir(), "q975.bm_gif")
+  dir.create(dir_out_q975, recursive = TRUE)
+  
+  # stationary model
+  dir_out_s <- file.path(tempdir(), "mean.st_gif")
+  dir.create(dir_out_s, recursive = TRUE)
+  
+  dir_out_st.sd <- file.path(tempdir(), "sd.st_gif")
+  dir.create(dir_out_st.sd, recursive = TRUE)
+  
+  dir_out_st.q25 <- file.path(tempdir(), "q25.st_gif")
+  dir.create(dir_out_st.q25, recursive = TRUE)
+  
+  dir_out_st.q5 <- file.path(tempdir(), "q5.st_gif")
+  dir.create(dir_out_st.q5, recursive = TRUE)
+  
+  dir_out_st.q975 <- file.path(tempdir(), "q975.st_gif")
+  dir.create(dir_out_st.q975, recursive = TRUE)
+  
+  for (r in 1:length(trans)) {
+    
+    f <- fr[r]
+    range.fraction <- c(f, f)
+    
+    # SPATIAL FIELD, u
+    fpp <- file.path(dir_out_f, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$list.field$sample, 
+                     main="Spatial true (simulated) field",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.field)
+    plot(poly.bar.orginal, add=T, col = col)
+    plot.points
+    dev.off()
+    
+    ## TBM
+    # POSTERIOR MEAN
+    fpp <- file.path(dir_out_pm.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s$mean, 
+                     main="Spatial estimate for Transparent Barrier model",
+                     sub = paste("range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.mean)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD
+    fpp <- file.path(dir_out_sd.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s$sd, 
+                     main="Spatial sd estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES
+    # 0.025
+    fpp <- file.path(dir_out_q25.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q25)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5
+    fpp <- file.path(dir_out_q5.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q50)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975
+    fpp <- file.path(dir_out_q975.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q975)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    ##BM
+    fpp <- file.path(dir_out_pm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s$mean, 
+                     main="Spatial estimate for Barrier model",
+                     sub = paste("range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.mean)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD
+    fpp <- file.path(dir_out_sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s$sd, 
+                     main="Spatial sd estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES
+    # 0.025
+    fpp <- file.path(dir_out_q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q25)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5
+    fpp <- file.path(dir_out_q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q50)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975
+    fpp <- file.path(dir_out_q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q975)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # SPATIAL ESTIMATE WITH STATIONARY MODEL
+    fpp <- file.path(dir_out_s, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s$mean,
+                     main="Spatial estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.mean.st) 
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD st
+    fpp <- file.path(dir_out_st.sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s$sd, 
+                     main="Spatial sd estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.sd.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES st
+    # 0.025 st
+    fpp <- file.path(dir_out_st.q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,4], 
+                     main="Spatial 0.025 estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q25.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5 st
+    fpp <- file.path(dir_out_st.q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q50.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975 st
+    fpp <- file.path(dir_out_st.q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q975.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+  }
+  
+    ## bm
+    # SPATIAL FIELD, u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_f, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "true.field.gif"))
+    
+    ## TBM
+    # POSTERIOR MEAN
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_pm.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.tbm.gif"))
+    
+    #POS SD
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_sd.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.tbm.gif"))
+    
+    #POS QUANTILES
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q25.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.tbm.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q5.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.tbm.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q975.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.tbm.gif"))
+    
+    ## BM
+    # POSTERIOR MEAN
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_pm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.bm.gif"))
+    
+    #POS SD
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.bm.gif"))
+    
+    #POS QUANTILES
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.bm.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.bm.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.bm.gif"))
+    
+    ## st
+    # u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_s, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.st.gif"))
+    
+    # st sd
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.st.gif"))
+    
+    #POS QUANTILES st
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.st.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.st.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.st.gif"))
+    
+    unlink(dir_out_f, recursive = T)
+    unlink(dir_out_pm.tbm, recursive = T)
+    unlink(dir_out_sd.tbm, recursive = T)
+    unlink(dir_out_q25.tbm, recursive = T)
+    unlink(dir_out_q5.tbm, recursive = T)
+    unlink(dir_out_q975.tbm, recursive = T)
+    
+    unlink(dir_out_pm, recursive = T)
+    unlink(dir_out_sd, recursive = T)
+    unlink(dir_out_q25, recursive = T)
+    unlink(dir_out_q5, recursive = T)
+    unlink(dir_out_q975, recursive = T)
+    unlink(dir_out_s, recursive = T)
+    unlink(dir_out_st.sd, recursive = T)
+    unlink(dir_out_st.q25, recursive = T)
+    unlink(dir_out_st.q5, recursive = T)
+    unlink(dir_out_st.q975, recursive = T)
+}
+```
+
+
+```{r}
+plot.model.tbm.plus.l <- 
+function(trans, 
+           fr,
+           max.frac = 1,
+           min.r = min.r,
+           poly.bar.orginal = poly.bar.orginal,
+           range = range,
+           fps = 1,
+           set.inla.seed = set.inla.seed,
+                              col=alpha('grey', 0),
+                              plot.points = points(loc.data, 
+                                              pch = 16, 
+                                              cex = 0.8, 
+                                              col=alpha('gray', 0)),
+                              gif.path = "gif/",
+                              pal.field = turbo(50),
+                              pal.pos.mean = turbo(50),
+                              pal.pos.sd = turbo(50),
+                              pal.pos.q25 = turbo(50),
+                              pal.pos.q50 = turbo(50),
+                              pal.pos.q975 = turbo(50),
+                              
+                              pal.pos.mean.st = turbo(50),
+                              pal.pos.sd.st = turbo(50),
+                              pal.pos.q25.st = turbo(50),
+                              pal.pos.q50.st = turbo(50),
+                              pal.pos.q975.st = turbo(50),
+                              ...
+    ){
+  dir_out_f <- file.path(tempdir(), "truefield_gif")
+  dir.create(dir_out_f, recursive = TRUE)
+  
+  # t. barrier model
+  dir_out_pm.tbm <- file.path(tempdir(), "mean.tbm_gif")
+  dir.create(dir_out_pm.tbm, recursive = TRUE)
+  
+  dir_out_sd.tbm <- file.path(tempdir(), "sd.tbm_gif")
+  dir.create(dir_out_sd.tbm, recursive = TRUE)
+  
+  dir_out_q25.tbm <- file.path(tempdir(), "q25.tbm_gif")
+  dir.create(dir_out_q25.tbm, recursive = TRUE)
+  
+  dir_out_q5.tbm <- file.path(tempdir(), "q5.tbm_gif")
+  dir.create(dir_out_q5.tbm, recursive = TRUE)
+  
+  dir_out_q975.tbm <- file.path(tempdir(), "q975.tbm_gif")
+  dir.create(dir_out_q975.tbm, recursive = TRUE)
+  
+  # barrier model
+  dir_out_pm <- file.path(tempdir(), "mean.bm_gif")
+  dir.create(dir_out_pm, recursive = TRUE)
+  
+  dir_out_sd <- file.path(tempdir(), "sd.bm_gif")
+  dir.create(dir_out_sd, recursive = TRUE)
+  
+  dir_out_q25 <- file.path(tempdir(), "q25.bm_gif")
+  dir.create(dir_out_q25, recursive = TRUE)
+  
+  dir_out_q5 <- file.path(tempdir(), "q5.bm_gif")
+  dir.create(dir_out_q5, recursive = TRUE)
+  
+  dir_out_q975 <- file.path(tempdir(), "q975.bm_gif")
+  dir.create(dir_out_q975, recursive = TRUE)
+  
+  # stationary model
+  dir_out_s <- file.path(tempdir(), "mean.st_gif")
+  dir.create(dir_out_s, recursive = TRUE)
+  
+  dir_out_st.sd <- file.path(tempdir(), "sd.st_gif")
+  dir.create(dir_out_st.sd, recursive = TRUE)
+  
+  dir_out_st.q25 <- file.path(tempdir(), "q25.st_gif")
+  dir.create(dir_out_st.q25, recursive = TRUE)
+  
+  dir_out_st.q5 <- file.path(tempdir(), "q5.st_gif")
+  dir.create(dir_out_st.q5, recursive = TRUE)
+  
+  dir_out_st.q975 <- file.path(tempdir(), "q975.st_gif")
+  dir.create(dir_out_st.q975, recursive = TRUE)
+  
+  for (r in 1:length(trans)) {
+    f <- fr[r]
+    range.fraction <- c(0.01, f)
+    
+    # SPATIAL FIELD, u
+    fpp <- file.path(dir_out_f, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$list.field$sample, 
+                     main="Spatial true (simulated) field",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.field)
+    plot(poly.bar.orginal, add=T, col = col)
+    plot.points
+    dev.off()
+    
+    ## TBM
+    # POSTERIOR MEAN
+    fpp <- file.path(dir_out_pm.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s$mean, 
+                     main="Spatial estimate for Transparent Barrier model",
+                     sub = paste("range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.mean)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD
+    fpp <- file.path(dir_out_sd.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s$sd, 
+                     main="Spatial sd estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES
+    # 0.025
+    fpp <- file.path(dir_out_q25.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q25)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5
+    fpp <- file.path(dir_out_q5.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q50)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975
+    fpp <- file.path(dir_out_q975.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q975)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    ##BM
+    fpp <- file.path(dir_out_pm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s$mean, 
+                     main="Spatial estimate for Barrier model",
+                     sub = paste("range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.mean)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD
+    fpp <- file.path(dir_out_sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s$sd, 
+                     main="Spatial sd estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES
+    # 0.025
+    fpp <- file.path(dir_out_q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q25)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5
+    fpp <- file.path(dir_out_q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q50)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975
+    fpp <- file.path(dir_out_q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q975)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # SPATIAL ESTIMATE WITH STATIONARY MODEL
+    fpp <- file.path(dir_out_s, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s$mean,
+                     main="Spatial estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.mean.st) 
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD st
+    fpp <- file.path(dir_out_st.sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s$sd, 
+                     main="Spatial sd estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.sd.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES st
+    # 0.025 st
+    fpp <- file.path(dir_out_st.q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,4], 
+                     main="Spatial 0.025 estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q25.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5 st
+    fpp <- file.path(dir_out_st.q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q50.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975 st
+    fpp <- file.path(dir_out_st.q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q975.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+  }
+  
+    ## bm
+    # SPATIAL FIELD, u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_f, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "true.field.gif"))
+    
+    ## TBM
+    # POSTERIOR MEAN
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_pm.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.tbm.gif"))
+    
+    #POS SD
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_sd.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.tbm.gif"))
+    
+    #POS QUANTILES
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q25.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.tbm.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q5.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.tbm.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q975.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.tbm.gif"))
+    
+    ## BM
+    # POSTERIOR MEAN
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_pm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.bm.gif"))
+    
+    #POS SD
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.bm.gif"))
+    
+    #POS QUANTILES
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.bm.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.bm.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.bm.gif"))
+    
+    ## st
+    # u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_s, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.st.gif"))
+    
+    # st sd
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.st.gif"))
+    
+    #POS QUANTILES st
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.st.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.st.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.st.gif"))
+    
+    unlink(dir_out_f, recursive = T)
+    unlink(dir_out_pm.tbm, recursive = T)
+    unlink(dir_out_sd.tbm, recursive = T)
+    unlink(dir_out_q25.tbm, recursive = T)
+    unlink(dir_out_q5.tbm, recursive = T)
+    unlink(dir_out_q975.tbm, recursive = T)
+    
+    unlink(dir_out_pm, recursive = T)
+    unlink(dir_out_sd, recursive = T)
+    unlink(dir_out_q25, recursive = T)
+    unlink(dir_out_q5, recursive = T)
+    unlink(dir_out_q975, recursive = T)
+    unlink(dir_out_s, recursive = T)
+    unlink(dir_out_st.sd, recursive = T)
+    unlink(dir_out_st.q25, recursive = T)
+    unlink(dir_out_st.q5, recursive = T)
+    unlink(dir_out_st.q975, recursive = T)
+}
+```
+
+with zlim
+```{r}
+plot.model.tbm.plus.l.z <- 
+function(trans, 
+           fr,
+           max.frac = 1,
+           min.r = min.r,
+           poly.bar.orginal = poly.bar.orginal,
+           range = range,
+           fps = 1,
+           zlim.sd = zlim.sd,
+           zlim.mean = zlim.mean,
+           set.inla.seed = set.inla.seed,
+                              col=alpha('grey', 0),
+                              plot.points = points(loc.data, 
+                                              pch = 16, 
+                                              cex = 0.8, 
+                                              col=alpha('gray', 0)),
+                              gif.path = "gif/",
+                              pal.field = turbo(50),
+                              pal.pos.mean = turbo(50),
+                              pal.pos.sd = turbo(50),
+                              pal.pos.q25 = turbo(50),
+                              pal.pos.q50 = turbo(50),
+                              pal.pos.q975 = turbo(50),
+                              
+                              pal.pos.mean.st = turbo(50),
+                              pal.pos.sd.st = turbo(50),
+                              pal.pos.q25.st = turbo(50),
+                              pal.pos.q50.st = turbo(50),
+                              pal.pos.q975.st = turbo(50),
+                              ...
+    ){
+  dir_out_f <- file.path(tempdir(), "truefield_gif")
+  dir.create(dir_out_f, recursive = TRUE)
+  
+  # t. barrier model
+  dir_out_pm.tbm <- file.path(tempdir(), "mean.tbm_gif")
+  dir.create(dir_out_pm.tbm, recursive = TRUE)
+  
+  dir_out_sd.tbm <- file.path(tempdir(), "sd.tbm_gif")
+  dir.create(dir_out_sd.tbm, recursive = TRUE)
+  
+  dir_out_q25.tbm <- file.path(tempdir(), "q25.tbm_gif")
+  dir.create(dir_out_q25.tbm, recursive = TRUE)
+  
+  dir_out_q5.tbm <- file.path(tempdir(), "q5.tbm_gif")
+  dir.create(dir_out_q5.tbm, recursive = TRUE)
+  
+  dir_out_q975.tbm <- file.path(tempdir(), "q975.tbm_gif")
+  dir.create(dir_out_q975.tbm, recursive = TRUE)
+  
+  # barrier model
+  dir_out_pm <- file.path(tempdir(), "mean.bm_gif")
+  dir.create(dir_out_pm, recursive = TRUE)
+  
+  dir_out_sd <- file.path(tempdir(), "sd.bm_gif")
+  dir.create(dir_out_sd, recursive = TRUE)
+  
+  dir_out_q25 <- file.path(tempdir(), "q25.bm_gif")
+  dir.create(dir_out_q25, recursive = TRUE)
+  
+  dir_out_q5 <- file.path(tempdir(), "q5.bm_gif")
+  dir.create(dir_out_q5, recursive = TRUE)
+  
+  dir_out_q975 <- file.path(tempdir(), "q975.bm_gif")
+  dir.create(dir_out_q975, recursive = TRUE)
+  
+  # stationary model
+  dir_out_s <- file.path(tempdir(), "mean.st_gif")
+  dir.create(dir_out_s, recursive = TRUE)
+  
+  dir_out_st.sd <- file.path(tempdir(), "sd.st_gif")
+  dir.create(dir_out_st.sd, recursive = TRUE)
+  
+  dir_out_st.q25 <- file.path(tempdir(), "q25.st_gif")
+  dir.create(dir_out_st.q25, recursive = TRUE)
+  
+  dir_out_st.q5 <- file.path(tempdir(), "q5.st_gif")
+  dir.create(dir_out_st.q5, recursive = TRUE)
+  
+  dir_out_st.q975 <- file.path(tempdir(), "q975.st_gif")
+  dir.create(dir_out_st.q975, recursive = TRUE)
+  
+  for (r in 1:length(trans)) {
+    zlim.mean <- zlim.mean
+    zlim.sd <- zlim.sd
+    f <- fr[r]
+    range.fraction <- c(0.01, f)
+    
+    # SPATIAL FIELD, u
+    fpp <- file.path(dir_out_f, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$list.field$sample, 
+                     main="Spatial true (simulated) field",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.field)
+    plot(poly.bar.orginal, add=T, col = col)
+    plot.points
+    dev.off()
+    
+    ## TBM
+    # POSTERIOR MEAN
+    fpp <- file.path(dir_out_pm.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s$mean, 
+                     main="Spatial estimate for Transparent Barrier model",
+                     sub = paste("range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.mean,
+                     zlim = zlim.mean)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD
+    fpp <- file.path(dir_out_sd.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s$sd, 
+                     main="Spatial sd estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.sd,
+                     zlim = zlim.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES
+    # 0.025
+    fpp <- file.path(dir_out_q25.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q25)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5
+    fpp <- file.path(dir_out_q5.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q50)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975
+    fpp <- file.path(dir_out_q975.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q975)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    ##BM
+    fpp <- file.path(dir_out_pm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s$mean, 
+                     main="Spatial estimate for Barrier model",
+                     sub = paste("range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.mean,
+                     zlim = zlim.mean)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD
+    fpp <- file.path(dir_out_sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s$sd, 
+                     main="Spatial sd estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.sd,
+                     zlim = zlim.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES
+    # 0.025
+    fpp <- file.path(dir_out_q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q25)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5
+    fpp <- file.path(dir_out_q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q50)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975
+    fpp <- file.path(dir_out_q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q975)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # SPATIAL ESTIMATE WITH STATIONARY MODEL
+    fpp <- file.path(dir_out_s, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s$mean,
+                     main="Spatial estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.mean.st,
+                     zlim = zlim.mean) 
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD st
+    fpp <- file.path(dir_out_st.sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s$sd, 
+                     main="Spatial sd estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.sd.st,
+                     zlim = zlim.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES st
+    # 0.025 st
+    fpp <- file.path(dir_out_st.q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,4], 
+                     main="Spatial 0.025 estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q25.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5 st
+    fpp <- file.path(dir_out_st.q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q50.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975 st
+    fpp <- file.path(dir_out_st.q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     axes = F, pal = pal.pos.q975.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+  }
+  
+    ## bm
+    # SPATIAL FIELD, u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_f, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "true.field.gif"))
+    
+    ## TBM
+    # POSTERIOR MEAN
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_pm.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.tbm.gif"))
+    
+    #POS SD
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_sd.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.tbm.gif"))
+    
+    #POS QUANTILES
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q25.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.tbm.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q5.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.tbm.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q975.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.tbm.gif"))
+    
+    ## BM
+    # POSTERIOR MEAN
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_pm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.bm.gif"))
+    
+    #POS SD
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.bm.gif"))
+    
+    #POS QUANTILES
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.bm.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.bm.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.bm.gif"))
+    
+    ## st
+    # u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_s, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.st.gif"))
+    
+    # st sd
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.st.gif"))
+    
+    #POS QUANTILES st
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.st.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.st.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.st.gif"))
+    
+    unlink(dir_out_f, recursive = T)
+    unlink(dir_out_pm.tbm, recursive = T)
+    unlink(dir_out_sd.tbm, recursive = T)
+    unlink(dir_out_q25.tbm, recursive = T)
+    unlink(dir_out_q5.tbm, recursive = T)
+    unlink(dir_out_q975.tbm, recursive = T)
+    
+    unlink(dir_out_pm, recursive = T)
+    unlink(dir_out_sd, recursive = T)
+    unlink(dir_out_q25, recursive = T)
+    unlink(dir_out_q5, recursive = T)
+    unlink(dir_out_q975, recursive = T)
+    unlink(dir_out_s, recursive = T)
+    unlink(dir_out_st.sd, recursive = T)
+    unlink(dir_out_st.q25, recursive = T)
+    unlink(dir_out_st.q5, recursive = T)
+    unlink(dir_out_st.q975, recursive = T)
+}
+```
+
+```{r}
+inla.barrier.pcmatern.plus_ <- function (mesh, fem, barrier.triangles, prior.range, prior.sigma, range.fraction = 0.2) 
+{
+    if (missing(prior.range)) {
+        warning("Arbitrary prior values chosen automatically. This may suffice for a first attempt, \n            but should be changed in any serious analysis.")
+        prior.range <- c(diff(range(mesh$loc[, 1]))/5, 0.5)
+    }
+    if (missing(prior.sigma)) {
+        prior.sigma <- c(1, 0.5) 
+    }
+    stopifnot(inherits(mesh, "inla.mesh"))
+    stopifnot(range.fraction > 1e-06)
+
+    barrier.rgeneric.model <- function(cmd = c("graph", "Q", 
+        "mu", "initial", "log.norm.const", "log.prior", "quit"), 
+        theta = NULL) {
+        envir = parent.env(environment())
+        prior.sigma <- obj$prior.sigma
+        prior.range <- obj$prior.range
+        fem <- obj$fem
+        inla.barrier.q <- obj$inla.barrier.q
+        range.fraction <- obj$range.fraction
+        initial <- function(theta) {
+            initial.theta <- c()
+            if (!is.na(prior.sigma[2])) {
+                initial.theta <- c(0, initial.theta)
+            }
+            if (!is.na(prior.range[2])) {
+                initial.theta <- c(initial.theta, 0)
+            }
+            return(initial.theta)
+        }
+        log.prior <- function(theta) {
+            val <- 0
+            if (!is.na(prior.sigma[2])) {
+                lambda0 <- -log(prior.sigma[2])/prior.sigma[1]
+                val <- val + log(lambda0) - lambda0 * exp(theta[1]) + 
+                  theta[1]
+                theta.ran <- theta[-1]
+            }
+            else {
+                theta.ran <- theta
+            }
+            if (!is.na(prior.range[2])) {
+                lambda1 <- -log(prior.range[2]) * prior.range[1]
+                for (logrange in theta.ran) {
+                  val <- val + log(lambda1) - lambda1 * exp(-logrange) + 
+                    -logrange
+                }
+            }
+            return(val)
+        }
+        Q <- function(theta) {
+            theta.full <- theta
+            if (is.na(prior.sigma[2])) {
+                theta.full <- c(log(prior.sigma[1]), theta.full)
+            }
+            if (is.na(prior.range[2])) {
+                theta.full <- c(theta.full, log(prior.range[1]))
+            }
+            stopifnot(length(theta.full) == 2)
+            Q <- inla.barrier.q(fem = fem, ranges = exp(theta.full[2]) * 
+                c(1, range.fraction), sigma = exp(theta.full[1]), 
+                envir = envir) #ENVIR MAKES IT WORK
+            return(Q)
+        }
+        graph <- function(theta) {
+            require(methods)
+            ntheta <- 2
+            theta.full <- (1:ntheta)
+            G1 <- inla.barrier.q(fem = fem, ranges = exp(theta.full[2]) * 
+                c(1, range.fraction), sigma = exp(theta.full[1]))
+            G1[G1 != 0] <- 1
+            theta.full <- (1:ntheta)^2/12.1543534
+            G2 <- inla.barrier.q(fem = fem, ranges = exp(theta.full[2]) * 
+                c(1, range.fraction), sigma = exp(theta.full[1]))
+            G2[G2 != 0] <- 1
+            return(G1 + G2)
+        }
+        mu <- function(theta) numeric(0)
+        log.norm.const <- function(theta) numeric(0)
+        quit <- function(theta) invisible()
+        val <- do.call(match.arg(cmd), args = list(theta))
+        return(val)
+    }
+#   barrier.triangles <- unique(barrier.triangles)
+    obj <- list()
+    obj$prior.sigma <- prior.sigma
+    obj$prior.range <- prior.range
+    obj$range.fraction <- range.fraction
+    obj$inla.barrier.q <- inla.barrier.q
+    obj$fem <- fem
+    barrier.model <- inla.rgeneric.define(model = barrier.rgeneric.model, 
+        optimize = TRUE, obj = obj)
+    if (!is.na(prior.sigma[2]) && !is.na(prior.range[2])) {
+    }
+    else {
+        warning("Not properly tested, let us know if you have problems.")
+    }
+    return(barrier.model)
+}
+```
+
+
+```{r}
+plot.model.tbm.plus.r <- 
+function(trans, 
+           fr,
+           max.frac = 1,
+           min.r = min.r,
+           poly.bar.orginal = poly.bar.orginal,
+           range = range,
+           fps = 1,
+           set.inla.seed = set.inla.seed,
+                              col=alpha('grey', 0),
+                              plot.points = points(loc.data, 
+                                              pch = 16, 
+                                              cex = 0.8, 
+                                              col=alpha('gray', 0)),
+                              gif.path = "gif/",
+                              pal.field = turbo(50),
+                              pal.pos.mean = turbo(50),
+                              pal.pos.sd = turbo(50),
+                              pal.pos.q25 = turbo(50),
+                              pal.pos.q50 = turbo(50),
+                              pal.pos.q975 = turbo(50),
+                              
+                              pal.pos.mean.st = turbo(50),
+                              pal.pos.sd.st = turbo(50),
+                              pal.pos.q25.st = turbo(50),
+                              pal.pos.q50.st = turbo(50),
+                              pal.pos.q975.st = turbo(50),
+                              ...
+    ){
+  dir_out_f <- file.path(tempdir(), "truefield_gif")
+  dir.create(dir_out_f, recursive = TRUE)
+  
+  # t. barrier model
+  dir_out_pm.tbm <- file.path(tempdir(), "mean.tbm_gif")
+  dir.create(dir_out_pm.tbm, recursive = TRUE)
+  
+  dir_out_sd.tbm <- file.path(tempdir(), "sd.tbm_gif")
+  dir.create(dir_out_sd.tbm, recursive = TRUE)
+  
+  dir_out_q25.tbm <- file.path(tempdir(), "q25.tbm_gif")
+  dir.create(dir_out_q25.tbm, recursive = TRUE)
+  
+  dir_out_q5.tbm <- file.path(tempdir(), "q5.tbm_gif")
+  dir.create(dir_out_q5.tbm, recursive = TRUE)
+  
+  dir_out_q975.tbm <- file.path(tempdir(), "q975.tbm_gif")
+  dir.create(dir_out_q975.tbm, recursive = TRUE)
+  
+  # barrier model
+  dir_out_pm <- file.path(tempdir(), "mean.bm_gif")
+  dir.create(dir_out_pm, recursive = TRUE)
+  
+  dir_out_sd <- file.path(tempdir(), "sd.bm_gif")
+  dir.create(dir_out_sd, recursive = TRUE)
+  
+  dir_out_q25 <- file.path(tempdir(), "q25.bm_gif")
+  dir.create(dir_out_q25, recursive = TRUE)
+  
+  dir_out_q5 <- file.path(tempdir(), "q5.bm_gif")
+  dir.create(dir_out_q5, recursive = TRUE)
+  
+  dir_out_q975 <- file.path(tempdir(), "q975.bm_gif")
+  dir.create(dir_out_q975, recursive = TRUE)
+  
+  # stationary model
+  dir_out_s <- file.path(tempdir(), "mean.st_gif")
+  dir.create(dir_out_s, recursive = TRUE)
+  
+  dir_out_st.sd <- file.path(tempdir(), "sd.st_gif")
+  dir.create(dir_out_st.sd, recursive = TRUE)
+  
+  dir_out_st.q25 <- file.path(tempdir(), "q25.st_gif")
+  dir.create(dir_out_st.q25, recursive = TRUE)
+  
+  dir_out_st.q5 <- file.path(tempdir(), "q5.st_gif")
+  dir.create(dir_out_st.q5, recursive = TRUE)
+  
+  dir_out_st.q975 <- file.path(tempdir(), "q975.st_gif")
+  dir.create(dir_out_st.q975, recursive = TRUE)
+  
+  for (r in 1:length(trans)) {
+    
+    f <- fr[r]
+    range.fraction <- c(f, 0.01)
+    
+    # SPATIAL FIELD, u
+    fpp <- file.path(dir_out_f, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$list.field$sample, 
+                     main="Spatial true (simulated) field",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.field)
+    plot(poly.bar.orginal, add=T, col = col)
+    plot.points
+    dev.off()
+    
+    ## TBM
+    # POSTERIOR MEAN
+    fpp <- file.path(dir_out_pm.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s$mean, 
+                     main="Spatial estimate for Transparent Barrier model",
+                     sub = paste("range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.mean)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD
+    fpp <- file.path(dir_out_sd.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s$sd, 
+                     main="Spatial sd estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES
+    # 0.025
+    fpp <- file.path(dir_out_q25.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q25)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5
+    fpp <- file.path(dir_out_q5.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q50)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975
+    fpp <- file.path(dir_out_q975.tbm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.tbm$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate for Transparent Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q975)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    ##BM
+    fpp <- file.path(dir_out_pm, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s$mean, 
+                     main="Spatial estimate for Barrier model",
+                     sub = paste("range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.mean)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD
+    fpp <- file.path(dir_out_sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s$sd, 
+                     main="Spatial sd estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.sd)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES
+    # 0.025
+    fpp <- file.path(dir_out_q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,4], 
+                     main="Spatial 0.025 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q25)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5
+    fpp <- file.path(dir_out_q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q50)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975
+    fpp <- file.path(dir_out_q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.bm$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate for Barrier model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q975)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # SPATIAL ESTIMATE WITH STATIONARY MODEL
+    fpp <- file.path(dir_out_s, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s$mean,
+                     main="Spatial estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.mean.st) 
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS SD st
+    fpp <- file.path(dir_out_st.sd, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s$sd, 
+                     main="Spatial sd estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.sd.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    #POS QUANTILES st
+    # 0.025 st
+    fpp <- file.path(dir_out_st.q25, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,4], 
+                     main="Spatial 0.025 estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q25.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+
+    # 0.5 st
+    fpp <- file.path(dir_out_st.q5, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,5], 
+                     main="Spatial 0.5 quantile estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q50.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+    
+    # 0.975 st
+    fpp <- file.path(dir_out_st.q975, paste0(f, ".png"))
+    png(fpp)
+    
+    local.plot.field(trans[[r]]$pos.st$res$summary.random$s[,6], 
+                     main="Spatial 0.975 quantile estimate with the stationary model",
+                     sub = paste("Barrier Model, range.fraction = c(", 
+                               range.fraction[1], ", ", range.fraction[2], ")"),
+                     pal = pal.pos.q975.st)
+    plot(poly.bar.orginal, add=T, col = col)
+    dev.off()
+  }
+  
+    ## bm
+    # SPATIAL FIELD, u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_f, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "true.field.gif"))
+    
+    ## TBM
+    # POSTERIOR MEAN
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_pm.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.tbm.gif"))
+    
+    #POS SD
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_sd.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.tbm.gif"))
+    
+    #POS QUANTILES
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q25.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.tbm.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q5.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.tbm.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q975.tbm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.tbm.gif"))
+    
+    ## BM
+    # POSTERIOR MEAN
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_pm, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.bm.gif"))
+    
+    #POS SD
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.bm.gif"))
+    
+    #POS QUANTILES
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.bm.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.bm.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.bm.gif"))
+    
+    ## st
+    # u
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_s, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "mean.st.gif"))
+    
+    # st sd
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.sd, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "sd.st.gif"))
+    
+    #POS QUANTILES st
+    # 0.025
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q25, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q25.st.gif"))
+    
+    # 0.5
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q5, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q5.st.gif"))
+    
+    # 0.975
+    image_write(image = image_animate(
+      image_join(
+        lapply(list.files(dir_out_st.q975, full.names = TRUE), image_read)), 
+      fps = fps), 
+      path = paste0(gif.path, "q975.st.gif"))
+    
+    unlink(dir_out_f, recursive = T)
+    unlink(dir_out_pm.tbm, recursive = T)
+    unlink(dir_out_sd.tbm, recursive = T)
+    unlink(dir_out_q25.tbm, recursive = T)
+    unlink(dir_out_q5.tbm, recursive = T)
+    unlink(dir_out_q975.tbm, recursive = T)
+    
+    unlink(dir_out_pm, recursive = T)
+    unlink(dir_out_sd, recursive = T)
+    unlink(dir_out_q25, recursive = T)
+    unlink(dir_out_q5, recursive = T)
+    unlink(dir_out_q975, recursive = T)
+    unlink(dir_out_s, recursive = T)
+    unlink(dir_out_st.sd, recursive = T)
+    unlink(dir_out_st.q25, recursive = T)
+    unlink(dir_out_st.q5, recursive = T)
+    unlink(dir_out_st.q975, recursive = T)
+}
+```
+
+filter.mseh.holes.dng
+```{r}
+corr.tbm <- function(barrier.model,
+    range.fraction = range.fraction,
+    id.node = id.node,
+    prior.range = prior.range,
+    prior.sigma = prior.sigma) {
+  
+  Q <- inla.rgeneric.q(
+    barrier.model, 
+    "Q",
+    theta = c(log(prior.sigma[1]),
+              log(prior.range[1])))
+  
+  sd <- sqrt(diag(inla.qinv(Q)))
+  Inode <- rep(0, dim(Q)[1])
+  Inode[id.node] <- 1
+  
+  covar.column <- solve(Q, Inode)
+  corr = drop(matrix(covar.column))/(sd*sd[id.node])
+  #cov = drop(matrix(covar.column))
+  return(corr)
+}
+```
+
+Ratios.Rmd
+```{r}
+corr.covfx <- function(range.fraction = range.fraction,
+                       id.node = id.node,
+                       prior.range = prior.range) {
+  
+  barrier.model <- inla.barrier.pcmatern.plus(
+    mesh = mesh,
+    fem = fem,
+    barrier.triangles = barrier.triangles,
+    prior.range = prior.range,
+    prior.sigma = prior.sigma,
+    range.fraction = range.fraction)
+  
+  Q <- inla.rgeneric.q(
+    barrier.model, 
+    "Q",
+    theta = c(log(prior.sigma[1]), 
+              log(prior.range[1])))
+
+  sd <- sqrt(diag(inla.qinv(Q)))
+  Inode <- rep(0, dim(Q)[1])
+  Inode[id.node] <- 1
+
+  covar.column <- solve(Q, Inode)
+  corr = drop(matrix(covar.column))/(sd*sd[id.node])
+  cov = drop(matrix(covar.column))
+
+  return.list <- list(corr = corr, cov = cov)
+  return(return.list)
+}
+
+df4plot <- function(field, 
+                    dims = 300,
+                    id.coord = id.coord) {
+  
+  proj = inla.mesh.projector(mesh, xlim = xlim, 
+                             ylim = ylim, dims=c(dims, dims))
+  
+  # Do the projection 
+  field.proj = inla.mesh.project(proj, field)
+  
+  hilo <- list()
+  for(i in 1:dims) {
+    hilo[[i]] <- field.proj[,i]
+  }
+  
+  hilo <- unlist(hilo)
+
+  df <- cbind(proj$lattice$loc,
+    sqrt((proj$lattice$loc[,1] - id.coord[[1]])^2 + (proj$lattice$loc[,2] - id.coord[[2]])^2),
+    hilo)
+
+  colnames(df) <- c("x", "y", "dist", "field")
+  df <- as.data.frame(df)
+  return(df)
+}
+
+corr.plots <- function(field, df,
+                       xlim, ylim, zlim,
+                       points = NULL,
+                       filter = 0.2,
+                       show.plot.field = TRUE,
+                       plot.order = 1){
+  
+  if(show.plot.field == TRUE) {
+    local.plot.field(field, mesh, 
+                     xlim = xlim, 
+                     ylim = ylim,
+                     zlim = zlim)
+    points(points)
+  }
+  
+  df <- df %>% dplyr::filter(field > filter)
+  
+  if(plot.order == 1){
+  gg <- ggplot(data = df, aes(x = field, y = dist)) +
+    geom_line()
+  }
+  
+  if(plot.order == 2){ 
+  gg <- ggplot(data = df, aes(x = dist, y = field)) +
+    geom_line()
+  }
+  
+  return.list <- list(df = summary(df), gg = gg)
+  return(return.list)
+}
+```
+
+
+
