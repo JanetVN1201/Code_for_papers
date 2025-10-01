@@ -1,5 +1,6 @@
 library(INLA)
 library(rstan)
+library(tictoc)
 
 #https://onlinelibrary.wiley.com/doi/full/10.1002/bimj.201600207
 
@@ -49,12 +50,13 @@ N = nrow(data_stan)
 colnames(data_stan) <- c(paste0("x",1:10),"y")
 data_stan <- as.list(data_stan)
 data_stan$N <- N
+tic()
 res_stan <- stan(model_code = stanmodelcode,
                  model_name = "Imbalanced data_logit",
                  data = data_stan,
                  iter = 10000,
                  chains = 3)
-
+toc()
 samps <- rstan:::extract(res_stan)
 mcmc.skew <- rep(NA,11)
 
@@ -322,6 +324,7 @@ y = data10$class
 Ntrials = 1
 
 # For loop for the main optimisation function
+tic()
 for(i in seq_along(to_be_corrected)){
 
   print(i)
@@ -368,7 +371,7 @@ for(i in seq_along(to_be_corrected)){
 
   beta_skew_est[i] <- r$par[1]
 }
-
+toc()
 #Plots
 
 mean_of_corrected <- res1_bimj$misc$configs$config[[1]]$improved.mean
