@@ -314,7 +314,7 @@ CORR_MAT <- cov2cor(S0)
 CORR_MAT
 
 # To declare which components to correct
-to_be_corrected <- 1:4
+to_be_corrected <- 1
 
 
 # Declaring an empty vector to store the results
