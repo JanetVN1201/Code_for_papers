@@ -1,19 +1,9 @@
-library(parallel)
-library(Matrix)
-library(statmod)
-library(runjags)
 library(rjags)
 library(INLA)
 library(sn)
-library(numDeriv)
-library(mvtnorm)
-library(gtools)
-library(e1071)
-library(parallel)
-library(LaplacesDemon)
 
+# Simulate data-------------------------------------------------------------------------------------------------
 set.seed(10)
-#change sampl size here
 n <- 100
 beta1 <- -2 #-2
 beta2 <- -3 #-3
@@ -21,8 +11,8 @@ beta3 <- -3
 beta4 <- 1
 No_of_fixed_effects <- n + 4
 rho <- sqrt(3)/2
-#set.seed(123)
-covariate1 <- rep(1, n) #rnorm(n, mean = 1, sd = 0.5) #rep(1, n)
+
+covariate1 <- rep(1, n) 
 covariate2 <- rnorm(n, mean = 0, sd = 0.5)
 covariate3 <- rnorm(n, mean = 0.2, sd = 0.25)
 covariate4 <- rnorm(n, mean = 0.1, sd = 0.5)
@@ -31,11 +21,11 @@ s <- 1
 prec <- 1/s^2
 S0 <- s^2 * toeplitz(rho^seq(0, n-1))
 Q0 <- solve(S0)
-#set.seed(123)
+
 u <-  rmvnorm(1, sigma = S0)[1,] 
 eta <- beta1 * covariate1 + beta2 * covariate2 + beta3 * covariate3 + beta4 * covariate4 + u
 mu <- exp(eta) / (1 + exp(eta))
-#set.seed(7)
+
 Ntrials <- 2
 y <-  rbinom (n = n, prob = mu, size = Ntrials)
 table(y)
@@ -45,6 +35,7 @@ prior.ui <- list(prec = list(prior = "loggamma", param = c(1, 1), initial = log(
                  rho = list(prior = "loggamma", param = c(1, 1), initial = log((1+rho)/(1-rho)), fixed = T))
 
 
+# INLA VB-M+V----------------------------------------------------------------------------------------------------
 formula = y ~ -1 + x1 + x2 + x3 + x4 + f(idx,model="ar1",hyper = prior.ui)
 timeI1 <- Sys.time()
 
@@ -60,7 +51,9 @@ timeI2 <- Sys.time()
 time_INLA <- timeI2 - timeI1
 
 covariate <- res$misc$configs$A
+covariate <- covariate[,c(n + (1:4), 1:n)]
 
+# MCMC -----------------------------------------------------------------------------------------------------------
 model = "model {
 	for(i in 1:n){
 	y[i] ~ dbinom(p[i], Ntrials)
@@ -76,6 +69,7 @@ model = "model {
 		u[i] ~ dnorm(RHO * u[i-1], PREC / (1 - RHO * RHO))
 	}
 }" 
+
 time_MCMC1 <- Sys.time()
 trace = combine.mcmc(run.jags(model = model,
 			 monitor = c( "beta1", "beta2", "beta3",  "beta4"),
@@ -83,13 +77,15 @@ trace = combine.mcmc(run.jags(model = model,
 			 n.chains = 2,
 			 thin = 20,
 			 inits = list(beta0 = 0, beta1 = 0, ".RNG.name"="base::Super-Duper", ".RNG.seed"=7),
-			 burnin = 10^2,
-			 sample = 10^3,
+			 burnin = 10^1,
+			 sample = 10^2,
 			 method = "parallel"))
 time_MCMC2 <- Sys.time()
 time_MCMC <- time_MCMC2 - time_MCMC1
 
 beta_skew <- apply(trace, 2, skewness)
+
+# Helper functions for SGC-VB-------------------------------------------------------------------------------------------
 
 # Function for summing up skew normal
 sum.of.sn <- function(mu, var, skew) {
@@ -134,7 +130,6 @@ sum.of.sn <- function(mu, var, skew) {
     return (list(x = x + sum.mu, y = sum.f, mean = sum.mu, var = sum.var))
 }
 
-
 # Function for square root of eigen value decomposition
 mat.power <- function(A, power = 1) {
     e <- eigen(A)
@@ -143,8 +138,7 @@ mat.power <- function(A, power = 1) {
                nrow(A), ncol(A)))
 }
 
-
-# Function for re-ordering the varaince co-variance matrix
+# Function for re-ordering the variance co-variance matrix
 re_ordered_mat <- function(S, to_correct){
 	dim_of_mat <- dim(S)[1]
 	new_order <- c(to_correct, setdiff(1:dim_of_mat, to_correct))
@@ -152,7 +146,8 @@ re_ordered_mat <- function(S, to_correct){
 	return(new_mat)
 }
 
-# Function for optimising the skewness
+# Main function in SGC-VB
+# Function for optimizing the skewness
 VB_skew <- function(SKEW, to_correct) {
    
 #  print(SKEW)
@@ -210,29 +205,27 @@ VB_skew <- function(SKEW, to_correct) {
 	return(negative_log_likelihood_sum + sk)
 }
 
-## Automatic Version for optimisation
-
+# Extract first two posterior moments-----------------------------------------------------------------------
 ### Covariance matrix from INLA
-#S0 <- cov(trace) #solve(forceSymmetric(res$misc$configs$config[[1]]$Q))
 S0 <- solve(forceSymmetric(res$misc$configs$config[[1]]$Q))
 S0 <- S0[c(n + 1:4, 1:n), c(n + 1:4, 1:n)]
 S0 <- as.matrix(S0)
-#S0
-
-### Covariance matrix from INLA
+### Correlation matrix from INLA
 CORR_MAT <- cov2cor(S0)
-#CORR_MAT
 
-# To declare which components to correct
+# Mean 
+mu <- res$misc$configs$config[[1]]$improved.mean
+mu <- mu[c(n + 1:4, 1:n)]
+
+# To declare which components to correct--------------------------------------------------------------------
 to_be_corrected <- c(1:4)
 
-
-# Declaring an empty vector to store the results
+# Declaring an empty vector to store the results------------------------------------------------------------
 beta_skew_est <- numeric(length(to_be_corrected))
 
-# For loop for the main optimisation function
+# Main optimization function--------------------------------------------------------------------------------
 timeS1 <- Sys.time()
-for(i in seq_along(to_be_corrected)){
+for(i in seq_along(to_be_corrected)) {
 
 	print(i)
 	
@@ -240,7 +233,7 @@ for(i in seq_along(to_be_corrected)){
 	
 	to_correct <- order(abs(CORR_MAT[,to_be_corrected[i]]), decreasing = TRUE)
 	to_correct <- to_correct[1:ifelse(length(to_be_corrected) > 4, 4, length(to_be_corrected))]
-	len_to_correct <- 1 #length(to_correct)
+	len_to_correct <- 1 #correct one at a time
 	len_not_to_correct <- No_of_fixed_effects - len_to_correct
 	
 	S <- re_ordered_mat(S, to_correct)
@@ -249,7 +242,7 @@ for(i in seq_along(to_be_corrected)){
 	S22 <- S[len_to_correct + 1:len_not_to_correct, len_to_correct + 1:len_not_to_correct] 
 		# components not to correct
 	S21 <- S[len_to_correct + 1:len_not_to_correct, 1:len_to_correct] 
-		# Covariace part of to_correct and not_to_correct
+		# Covariance part of to_correct and not_to_correct
 
 	L11 <- t(chol(S11))
 	L11_inv <- solve(L11)
@@ -262,13 +255,11 @@ for(i in seq_along(to_be_corrected)){
 	LInv <- rbind(cbind(L11_inv, L12), cbind(L21, L22_eigen))
 	L <- solve(LInv)
 	
-#	mu <- apply(trace, 2, mean) #res$misc$configs$config[[1]]$improved.mean
-	mu <- res$misc$configs$config[[1]]$improved.mean
-	mu <- mu[c(n + 1:4, 1:n)]
 	mu_new <- mu[c(to_correct, setdiff(1:No_of_fixed_effects, to_correct))]
 	mu_ind <- LInv %*% mu_new
 	
 	len_to_correct <- length(to_correct)
+	
 	r <- optim(rep(1e-2, length(to_correct)), 
 		VB_skew, 
 		NULL,
@@ -281,27 +272,22 @@ for(i in seq_along(to_be_corrected)){
 timeS2 <- Sys.time()
 time_SC <- timeS2- timeS1
 
-# Comparing the results between JAGS and optimisation
+# Comparing the results between MCMC, INLA VB-M+V and SGC-VB-----------------------------------------------
 results <- data.frame(beta_skew_est, beta_skew[to_be_corrected])
-colnames(results) <- c("estimated", "TRUE")
-#results
-#print(round(results, 2))
-#print(table(y))
+colnames(results) <- c("SGC", "MCMC")
 
-
-mean_of_corrected <- res$misc$configs$config[[1]]$improved.mean[ n + (1:4)]
-varaince_of_corrected <- diag(S0[(1:4),(1:4)])
+mean_of_corrected <- mu[to_be_corrected]
+variance_of_corrected <- diag(S0[to_be_corrected,to_be_corrected])
 
 beta_mean <- apply(trace, 2, mean)
 beta_var <- (apply(trace, 2, sd))^2
 
-results$MCMC_mean <- beta_mean[1:4]
+results$MCMC_mean <- beta_mean[to_be_corrected]
 results$INLA_mean <- mean_of_corrected
-results$MCMC_var <- beta_var[1:4]
-results$INLA_var <- varaince_of_corrected
+results$MCMC_var <- beta_var[to_be_corrected]
+results$INLA_var <- variance_of_corrected
 print("n=100, iter = 10e3")
 print(round(results, 2))
 time_INLA
 time_INLA+time_SC
 time_MCMC
-
