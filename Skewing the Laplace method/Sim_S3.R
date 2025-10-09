@@ -191,6 +191,7 @@ pdf <- function(eta) return(p0*inverse_link(eta) + (1-p1)*(1-inverse_link(eta)))
 
 
 eta_i <- rnorm(n_sample, mean = 0, sd = 1000)
+eta_i = 0.3
 binomial_probs <- pdf(eta_i)
 y_i <- rbinom(n_sample, size = 1, prob = binomial_probs)
 
