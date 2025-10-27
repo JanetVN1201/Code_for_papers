@@ -1,6 +1,10 @@
 library(rjags)
+library(runjags)
 library(INLA)
 library(sn)
+library(mvtnorm)
+library(e1071)
+library(pracma)
 
 # Simulate data-------------------------------------------------------------------------------------------------
 set.seed(10)
@@ -77,8 +81,8 @@ trace = combine.mcmc(run.jags(model = model,
 			 n.chains = 2,
 			 thin = 20,
 			 inits = list(beta0 = 0, beta1 = 0, ".RNG.name"="base::Super-Duper", ".RNG.seed"=7),
-			 burnin = 10^1,
-			 sample = 10^2,
+			 burnin = 10^3,
+			 sample = 10^4,
 			 method = "parallel"))
 time_MCMC2 <- Sys.time()
 time_MCMC <- time_MCMC2 - time_MCMC1
@@ -126,7 +130,7 @@ sum.of.sn <- function(mu, var, skew) {
 
     sum.f <- Re(fft(sum.fft, inverse = TRUE))
     sum.f <- sum.f / (sum(sum.f) * (x[2] - x[1]))
-    if(even(m)) sum.f <- ifftshift(sum.f)
+    if(m %% 2 == 0) sum.f <- ifftshift(sum.f)
     return (list(x = x + sum.mu, y = sum.f, mean = sum.mu, var = sum.var))
 }
 

@@ -229,9 +229,6 @@ gauss_approx_log_like_to_plot <- dnorm(x = seq(-5, 5, 0.01), mean = mode_like, s
 second_deriv <- function(eta) return(hessian(log_likelihood_fn, eta))
 second_deriv_vals <- unlist(lapply(eta_to_plot1, second_deriv))
 
-# Plot d
-
-
 ## True Posterior
 log_prior_vals <- dnorm(eta_to_plot, mean = 0, sd = 1000, log = T)
 log_likelihood_vals <- log_likelihood_to_plot

@@ -1,4 +1,6 @@
-data1 <- readRDS("~/Skew_corr/dia_data_sam.rds")
+#Subsample of 50000
+data1 <- readRDS("dia_data_sam.rds")
+
 library(rstan)
 library(INLA)
 time_I1 <- Sys.time()
@@ -6,11 +8,11 @@ res1 <- inla(Diabetes_binary ~ 1 + HighBP + HighChol +
                 BMI + Smoker + Stroke,
              family = "binomial",
              data = data1,
-             control.predictor = list(compute = F),
-             control.compute = list(config=F, return.marginals.predictor=F),
+             control.predictor = list(compute = T),
+             control.compute = list(config=T, return.marginals.predictor=T),
              control.inla = list(control.vb = list(strategy = "variance")), 
              control.fixed=list(prec.intercept = 0.01, prec = 0.01),
-             verbose = T)
+             verbose = F)
 time_I2 <- Sys.time()
 time_INLAG <- time_I2-time_I1
 
@@ -50,6 +52,7 @@ data_stan <- as.list(data_stan)
 data_stan$N <- N
 
 library(R.utils)
+#With time restriction for comparison
 time_M1 <- Sys.time()
 res_stan <- withTimeout(stan(model_code = stanmodelcode,
                    model_name = "Imbalanced data_logit",
@@ -68,7 +71,7 @@ mcmc.sd <- apply(data.frame(samps[1:6]), 2, sd)
 mcmc.save3 <- list(mcmcskew3 = mcmc.skew, mcmcmean3 = mcmc.mean, mcmcsd3 = mcmc.sd,
                   mcmctime3 = time_M4)
 
-
+#without time restriction
 time_M1 <- Sys.time()
 res_stan <- stan(model_code = stanmodelcode,
                  model_name = "Imbalanced data_logit",
@@ -163,8 +166,7 @@ mat.power <- function(A, power = 1) {
            nrow(A), ncol(A)))
 }
 
-
-# Function for re-ordering the varaince co-variance matrix
+# Function for re-ordering the variance co-variance matrix
 re_ordered_mat <- function(S, to_correct){
   dim_of_mat <- dim(S)[1]
   new_order <- c(to_correct, setdiff(1:dim_of_mat, to_correct))
@@ -235,11 +237,9 @@ VB_skew <- function(SKEW, to_correct) {
 ### Covariance matrix from INLA
 S0 <- solve(forceSymmetric(res1$misc$configs$config[[1]]$Q))
 S0 <- as.matrix(S0)
-S0
 
 ### Covariance matrix from INLA
 CORR_MAT <- cov2cor(S0)
-CORR_MAT
 
 # To declare which components to correct
 to_be_corrected <- c(1,2)
@@ -302,8 +302,4 @@ for(i in seq_along(to_be_corrected)){
 }
 timeS2 <- Sys.time()
 time_S <- timeS2-timeS1
-
-tosave <- list(INLA_res = res1, skew_est = beta_skew_est, time_S, time_M, time_INLAG, mcmc3 = mcmc.save3,
-               mcmc4 = mcmc.save4, mcmc5 = mcmc.save5, mcmc6 = mcmc.save6)
-saveRDS(tosave, file = "~/Skew_corr/results_multi_5_50000.rds")
 
