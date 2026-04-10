@@ -116,7 +116,7 @@ inla.barrier.fem.plus <- function (mesh, barrier.triangles)
                 }
             }
         }
-        I <- sparseMatrix(i = index.i, j = index.j, x = Aij, 
+        I <- Matrix::sparseMatrix(i = index.i, j = index.j, x = Aij, 
             dims = c(mesh$n, mesh$n), repr = "T")
         return(I)
     }
@@ -148,7 +148,7 @@ inla.barrier.fem.plus <- function (mesh, barrier.triangles)
             }
             counter <- counter + 1
         }
-        Dk <- sparseMatrix(i = index.i, j = index.j, x = Aij, 
+        Dk <- Matrix::sparseMatrix(i = index.i, j = index.j, x = Aij, 
             dims = c(mesh$n, mesh$n), repr = "T")
         return(Dk)
     }
@@ -189,7 +189,7 @@ inla.barrier.q <- function (fem, ranges, sigma = 1, envir = NULL)
         }
     }
     N <- length(Cdiag)
-    Cinv <- sparseMatrix(i = 1:N, j = 1:N, x = 1/Cdiag, dims = c(N, 
+    Cinv <- Matrix::sparseMatrix(i = 1:N, j = 1:N, x = 1/Cdiag, dims = c(N, 
         N), repr = "T")
     A <- fem$I
     for (k in 1:xi) {
